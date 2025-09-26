@@ -1,0 +1,826 @@
+---
+title: "Variation in previous-token attention"
+author: "Sean Trott"
+date: "August 15, 2025"
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dpi = 300, fig.format = "pdf")
+```
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(lme4)
+library(viridis)
+library(ggridges)
+library(lmerTest)
+library(ggrepel)
+library(ggcorrplot)
+library(vroom)
+library(ggeffects)
+
+all_colors <- viridis::viridis(10, option = "mako")
+my_colors <- all_colors[c(3, 5, 7)]  # Selecting specific colors from the palette
+```
+
+# Load Pythia data
+
+
+Here, we analyze *summary data* looking at the average attention each head gives from each token to the previous token. 
+
+```{r include=FALSE}
+## setwd("/Users/seantrott/Dropbox/UCSD/Research/NLMs/epistemology/mechinterp_generalizability/src/analysis")
+directory_path <- "../../data/processed/attention_summaries/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+df_pythia_models <- bind_rows(csv_list) %>%
+  mutate(model = sub("^EleutherAI/", "", mpath)) %>%
+  filter(Layer > 0)
+nrow(df_pythia_models)
+
+
+table(df_pythia_models$seed)
+table(df_pythia_models$mpath)
+max(df_pythia_models$step_modded)
+
+```
+
+
+# Metrics
+
+- `mean_1back` is the average weight to previous tokens for a given head. 
+- The `mean_prev_self_ratio` is the average ratio of the 1-back attention to the self-attention. 
+- The `mean_prev_all_ratio` is the average ratio of the 1-back attention to *total attention* (which reduces to sequence length).
+
+Thus, `mean_1back` and `mean_prev_all_ratio` are perfectly correlated; `mean_prev_all_ratio` can just be interpreted then as the head's 1-back attention *relative* to a uniform baseline.
+
+```{r cors_metrics}
+df_pythia_models %>%
+  group_by(mpath) %>%
+  filter(step_modded == 143001) %>%
+  summarise(r_ratios = cor(mean_prev_self_ratio, mean_prev_all_ratio),
+            r_ratios = cor(mean_prev_self_ratio, mean_1back))
+
+
+df_pythia_models %>%
+  filter(step_modded == 143001) %>%
+  ggplot(aes(x = mean_prev_self_ratio,
+             y = mean_prev_all_ratio)) +
+  geom_point(alpha = .3) +
+  theme_minimal() +
+  labs(x = "Mean Prev/Self Ratio",
+       y = "Mean Prev/All Ratio") +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params))
+
+df_pythia_models %>%
+  filter(step_modded == 143001) %>%
+  ggplot(aes(x = mean_prev_self_ratio,
+             y = mean_1back)) +
+  geom_point(alpha = .3) +
+  theme_minimal() +
+  labs(x = "Mean Prev/Self Ratio",
+       y = "Mean Prev/All Ratio") +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params))
+
+```
+
+
+
+# Final-step attention
+
+## Previous token heads: a summary
+
+```{r final_step_1back}
+
+df_by_head_seed = df_pythia_models %>%
+  filter(step_modded == 143001) %>%
+  group_by(mpath) %>%
+  mutate(z_mean_1back = scale(mean_1back))
+
+
+### Max by layer
+df_by_head_seed %>%
+  group_by(mpath, seed_name, Layer, n_params) %>%
+  summarise(max_mean = max(mean_1back)) %>%
+  ggplot(aes(x = Layer,
+             y = seed_name,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Seed",
+       fill = "Max 1-back Attn.") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max 1-back Attn.") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(mpath, n_params))
+
+### Max by layer
+df_by_head_seed %>%
+  group_by(mpath, seed_name, Layer, n_params) %>%
+  summarise(max_mean = max(z_mean_1back)) %>%
+  ggplot(aes(x = Layer,
+             y = seed_name,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Seed",
+       fill = "Max 1-back Attn. (z-scored)") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max 1-back Attn. (z-scored)") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(mpath, n_params))
+
+
+### How does *max* attention per layer change across model size?
+df_layerwise_attn <- df_by_head_seed %>%
+  group_by(mpath, Layer, n_params, seed_name) %>%
+  summarise(
+    max_attention = max(z_mean_1back),
+    se_attention = sd(z_mean_1back) / sqrt(n()),
+    .groups = "drop"
+  )
+
+### 
+summary(lmer(data = df_layerwise_attn,
+             max_attention ~ log10(n_params) * Layer + (1|seed_name)))
+
+```
+
+
+## Layer depth ratio
+
+Where do these heads pop up?
+
+```{r layer_depth}
+df_pythia_models_final_step = df_pythia_models %>%
+  filter(step_modded == 143001) %>%
+  group_by(model) %>%
+  mutate(max_layer = max(Layer),
+         prop_layer = Layer / max_layer) %>%
+  ### Scale for interpreting the coefficients more easily
+  mutate(prop_layer_scaled = scale(prop_layer)) %>%
+  ungroup()
+
+
+# Summarize mean and SE by model and layer
+summary_df <- df_pythia_models_final_step %>%
+  group_by(model, n_params, seed_name, Layer) %>%
+  summarise(
+    max_ratio_per_seed = max(mean_1back, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(model, Layer, n_params) %>%
+  summarise(
+    avg_max_ratio = mean(max_ratio_per_seed, na.rm = TRUE),
+    se_max_ratio = sd(max_ratio_per_seed, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  )
+
+ggplot(summary_df, aes(x = Layer, y = avg_max_ratio, 
+                       color = reorder(model, n_params))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = avg_max_ratio - se_max_ratio,
+                  ymax = avg_max_ratio + se_max_ratio,
+                  fill = reorder(model, n_params)), alpha = 0.2, color = NA) +
+  labs(x = "Layer",
+       y = "Max 1-back Attn.",
+       color = "Model", fill = "Model") +
+  scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_fill_manual(values = viridisLite::viridis(4, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") 
+
+
+### Visualizing relative layer
+summary_df <- df_pythia_models_final_step %>%
+  mutate(binned_prop_layer = ntile(prop_layer, 6)) %>%
+  mutate(prop_binned = binned_prop_layer / 6) %>%
+  group_by(model, n_params, seed_name, prop_binned) %>%
+  summarise(
+    max_ratio_per_seed = max(mean_1back, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(model, prop_binned, n_params) %>%
+  summarise(
+    avg_max_ratio = mean(max_ratio_per_seed, na.rm = TRUE),
+    se_max_ratio = sd(max_ratio_per_seed, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  )
+
+ggplot(summary_df, aes(x = prop_binned, y = avg_max_ratio, 
+                       color = reorder(model, n_params))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = avg_max_ratio - se_max_ratio,
+                  ymax = avg_max_ratio + se_max_ratio,
+                  fill = reorder(model, n_params)), alpha = 0.2, color = NA) +
+  labs(x = "Layer Depth",
+       y = "Max 1-back Attn.",
+       color = "", fill = "") +
+  scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_fill_manual(values = viridisLite::viridis(4, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") 
+
+
+
+
+### Analyses
+summary(lmer(mean_1back ~ prop_layer + (1|Head) + (1|model), 
+             data = df_pythia_models_final_step))
+
+
+```
+
+
+
+# Attention over time
+
+
+## Previous token heads
+
+```{r previous_token_over_time}
+
+### Track max previous token heads at each time point for each seed, across layer/head
+df_by_head_max_attention = df_pythia_models %>%
+  group_by(model, n_params, step_modded, seed, seed_name) %>%
+  slice_max(mean_1back)
+
+
+summary_avg = df_by_head_max_attention %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(
+    mean_across_seeds = mean(mean_1back)
+  )
+
+df_by_head_max_attention %>%
+  ggplot(aes(x = step_modded,
+             y = mean_1back,
+             color = factor(seed_name))) +
+  geom_line(size = .6) +  # Lineplot for mean entropy
+  geom_line(data = summary_avg, aes(x = step_modded, y = mean_across_seeds), 
+             color = "black", size = 1.5) + # Smoothed average 
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "Max 1-back Attention",
+       color = "") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, 
+           linetype = "dotted", 
+           size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(9, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  facet_wrap(~reorder(model, n_params))
+
+
+
+summary(lmer(data = df_by_head_max_attention,
+             mean_1back ~ log10(step_modded) + (1|seed_name) + (1|model),
+             REML = FALSE))
+
+```
+
+## Individual heads
+
+```{r individual_heads}
+### 14M
+df_pythia_models %>%
+  filter(Layer == 3) %>%
+  filter(model == "pythia-14m") %>%
+  ggplot(aes(x = step_modded,
+             y = mean_1back,
+             color = factor(Head))) +
+  geom_point(size = 1.5, alpha = .7) +
+  geom_line(size = 2, alpha = .7) +
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "1-back Attention",
+       color = "Attention Head",
+       title = "Layer 3 Heads (14M)") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, 
+           linetype = "dotted", 
+           size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_viridis(option = "mako", discrete=TRUE) +
+  facet_wrap(~seed_name)
+
+### 14M
+df_pythia_models %>%
+  filter(Layer == 4) %>%
+  filter(model == "pythia-14m") %>%
+  ggplot(aes(x = step_modded,
+             y = mean_1back,
+             color = factor(Head))) +
+  geom_point(size = 1.5, alpha = .7) +
+  geom_line(size = 2, alpha = .7) +
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "1-back Attention",
+       color = "Attention Head",
+       title = "Layer 4 Heads (14M)") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, 
+           linetype = "dotted", 
+           size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_viridis(option = "mako", discrete=TRUE) +
+  facet_wrap(~seed_name)
+
+```
+
+
+## Research questions
+
+Do bigger models show an earlier onset of their biggest change?
+
+```{r onset}
+### First, try looking at first onset of a big change, trying out different ratios
+### Calculate cross-step ratio
+df_diff <- df_by_head_max_attention %>%
+  group_by(mpath, seed_name) %>%
+  arrange(step_modded) %>%
+  mutate(
+    log_step = log10(step_modded),
+    d_ratio = c(NA, diff(mean_1back) / diff(log_step))
+  ) %>%
+  ungroup()
+
+summary(df_diff$d_ratio)
+
+# Define a range of d_ratio thresholds to test
+d_ratio_thresholds <- seq(0.01, .3, by = 0.01)
+
+# Initialize a list to store the results for each d_ratio threshold
+results <- list()
+
+# Iterate over d_ratio thresholds
+for (threshold in d_ratio_thresholds) {
+  # Filter and find the emergence onset for each threshold
+  emergence_onset <- df_diff %>%
+    filter(d_ratio > threshold) %>%
+    group_by(model, seed_name, n_params) %>%  # Group by model size (n_params) and seed_name
+    slice_min(step_modded, with_ties = FALSE) %>%
+    ungroup()
+
+  # Store the emergence step for each threshold, seed, and model size
+  emergence_step_data <- emergence_onset %>%
+    select(model, seed_name, n_params, step_modded, d_ratio) %>%
+    mutate(d_ratio_threshold = threshold)  # Add the threshold as a column
+
+  # Append the result for this threshold to the list
+  results[[as.character(threshold)]] <- emergence_step_data
+}
+
+# Combine all the results into one data frame
+results_df <- bind_rows(results)
+
+results_summ = results_df %>%
+  group_by(model, n_params, seed_name) %>%
+  summarise(m_step = mean(step_modded - 1)) 
+
+### Plot average across d_ratio
+results_summ %>%
+  ggplot(aes(x = n_params,
+             y = m_step,
+             color = model)) +
+  geom_jitter(size = 5, alpha = .7, width = .05) +
+  scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  labs(x = "Number of Parameters (Log10)",
+       y = "Max. Deriv. Step (Log10)",
+       color = "") 
+
+
+### For each order magnitude in model size, how much sooner do we expect first onset on avearge?
+mod_ratio = lmer(data = results_summ,
+                 log10(m_step) ~ log10(n_params) + (1|seed_name))
+summary(mod_ratio)
+
+
+#### Now identify inflection points with GAMs
+library(mgcv)
+library(dplyr)
+library(ggplot2)
+
+# Fit a GAM to each model and seed, and extract the inflection point (where the derivative is maximized)
+df_emergence <- df_by_head_max_attention %>%
+  group_by(mpath, seed_name) %>%
+  arrange(step_modded) %>%
+  mutate(log_step = log10(step_modded)) %>%
+  group_map(~ {
+    # Fit the GAM
+    gam_model <- gam(mean_1back ~ s(log_step, k = 10), data = .x)
+
+    # Get the derivative of the smooth term (the rate of change)
+    gam_derivative <- predict(gam_model, type = "terms", se.fit = TRUE)
+
+    # Find the step where the rate of change is maximized
+    max_rate_of_change_step <- .x$step_modded[which.max(gam_derivative$fit)]
+
+    # Store the results
+    .x$emergence_step <- max_rate_of_change_step
+    .x$predictions <- predict(gam_model, newdata = .x)
+    
+    return(.x)
+  }) %>%
+  bind_rows()
+
+# Now plot the emergence step vs. model size
+df_emerg_summ = df_emergence %>%
+  group_by(model, seed, n_params) %>%
+  summarise(m_step = mean(emergence_step))
+
+df_emerg_summ %>%
+  ggplot(aes(x = n_params,
+             y = m_step,
+             color = model)) +
+  geom_jitter() +
+  scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  labs(x = "Number of Parameters (Log10)",
+       y = "Max. Deriv. Step (Log10)",
+       color = "") 
+  
+
+
+#### Now do it with GAMs: 
+### at what point does the attention~step relationship start to change?
+library(mgcv)
+
+# Fit GAM across all models/seeds
+df_by_head_max_attention$log_step = log10(df_by_head_max_attention$step_modded)
+gam_all <- gam(mean_1back ~ s(log_step), data = df_by_head_max_attention)
+
+# Summary of the GAM
+summary(gam_all)
+
+# Plot the GAM curve
+plot(gam_all)
+
+
+### Now plot it over the original models
+newdat_all <- tibble(
+  log_step = seq(min(df_by_head_max_attention$log_step),
+                 max(df_by_head_max_attention$log_step),
+                 length.out = 200)
+) %>%
+  mutate(step_modded = 10^log_step,
+         gam_pred = predict(gam_all, newdata = .))
+
+
+# Plot seed-level + average + OVERALL GAM across all facets
+df_by_head_max_attention %>%
+  ggplot(aes(x = step_modded,
+             y = mean_1back,
+             color = factor(seed_name))) +
+  geom_line(size = .6, alpha = .4) +   # individual curves
+  geom_line(data = summary_avg, 
+            aes(x = step_modded, y = mean_across_seeds), 
+            color = "black", size = 2) +      # per-model average
+  geom_line(data = newdat_all, 
+            aes(x = step_modded, y = gam_pred), 
+            inherit.aes = FALSE, 
+            alpha = .6,
+            color = "red", size = 1.5) +        # overall GAM overlay
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "Max 1-back Attention",
+       color = "") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(9, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  facet_wrap(~reorder(model, n_params))
+
+```
+
+
+What about reduced peak?
+
+```{r peak}
+df_peak <- df_by_head_max_attention %>%
+  group_by(mpath, model, seed_name, n_params) %>%
+  summarise(max_attn = max(mean_1back))
+
+df_peak %>%
+  group_by(n_params, mpath, model) %>%
+  summarise(mean_max = mean(max_attn))
+
+summary(lmer(data = df_peak, 
+        max_attn ~ log10(n_params) + (1|seed_name)))
+
+### Plot average across d_ratio
+df_peak %>%
+  ggplot(aes(x = n_params,
+             y = max_attn,
+             color = model)) +
+  geom_jitter(size = 5, alpha = .7, width = .05) +
+  scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_x_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  labs(x = "Number of Parameters (Log10)",
+       y = "Max. Peak",
+       color = "") 
+
+```
+
+What about reduced slope?
+
+```{r slope}
+df_by_head_max_attention <- df_by_head_max_attention %>%
+  mutate(log_step = log10(step_modded))
+
+# Fit linear models by model + seed
+slopes_df <- df_by_head_max_attention %>%
+  group_by(model, n_params, seed_name) %>%
+  nest() %>%
+  mutate(
+    fit = map(data, ~ lm(mean_1back ~ log_step, data = .x)),
+    tidied = map(fit, broom::tidy)
+  ) %>%
+  unnest(tidied) %>%
+  filter(term == "log_step") %>%
+  select(model, seed_name, estimate, std.error, statistic, p.value)
+
+
+slopes_df %>%
+  group_by(n_params, model) %>%
+  summarise(mean_slope = mean(estimate))
+
+
+summary(lmer(data = slopes_df, 
+        estimate ~ log10(n_params) + (1|seed_name)))
+
+slopes_df %>%
+  ggplot(aes(x = n_params,
+             y = estimate,
+             color = model)) +
+  geom_jitter(size = 5, alpha = .7, width = .05) +
+  scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_x_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  labs(x = "Number of Parameters (Log10)",
+       y = "Slope (Attention ~ Step)",
+       color = "") 
+
+```
+
+## Correlation matrix
+
+
+```{r mds}
+df_by_layer = df_pythia_models %>%
+  group_by(model, seed_name, step_modded) %>%
+  summarise(max_attn = max(mean_1back))
+
+
+df_wide <- df_by_layer %>%
+  ungroup() %>%
+  mutate(model_id = paste(model, "-", seed_name)) %>%
+  dplyr::select(step_modded, model_id, seed_name, max_attn) %>%
+  group_by(model_id, step_modded) %>%
+  summarise(max_attn = mean(max_attn, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(
+    names_from = model_id,
+    values_from = max_attn
+  )
+
+model_id_to_params <- df_pythia_models %>%
+  dplyr::select(model, seed_name, n_params) %>%
+  distinct() %>%
+  mutate(model_id = paste(model, "-", seed_name)) %>%
+  distinct(model_id, n_params) %>%
+  arrange(n_params) %>%
+  pull(model_id)
+
+
+### 
+cor_long <- df_wide %>%
+  # drop the step column; keep only model time series
+  dplyr::select(-step_modded) %>%
+  cor(use = "pairwise.complete.obs") %>%
+  as.data.frame() %>%
+  rownames_to_column("Var1") %>%
+  pivot_longer(
+    cols = -Var1,
+    names_to = "Var2",
+    values_to = "value"
+  ) %>%
+  mutate(
+    Var1 = factor(Var1, levels = model_id_to_params),
+    Var2 = factor(Var2, levels = model_id_to_params)
+  )
+
+
+
+### Make correlation matrix
+cor_long %>%
+  ggplot(aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  coord_fixed() +
+  theme_minimal(base_size = 10) +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    limit = c(-1, 1),
+    name = "Corr"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5),
+        axis.title = element_blank()) +
+  coord_fixed()
+
+
+### Avg. correlation within models
+# extract model name without seed
+cor_long <- cor_long %>%
+  # extract everything before the last " - " as the model
+  mutate(
+    model1 = str_replace(Var1, " - .*", ""),
+    model2 = str_replace(Var2, " - .*", ""),
+    same_model = model1 == model2
+  ) %>% 
+  mutate(same_exact = Var1 == Var2) %>%
+  filter(same_exact == FALSE)
+
+cor_long = cor_long %>%
+  left_join(df_pythia_models %>% select(model, n_params) %>% distinct(),
+            by = c("model1" = "model")) %>%
+  rename(n_params1 = n_params) %>%
+  left_join(df_pythia_models %>% select(model, n_params) %>% distinct(),
+            by = c("model2" = "model")) %>%
+  rename(n_params2 = n_params) 
+
+
+cor_long$cor = cor_long$value
+
+summary(lm(data = cor_long,
+             cor ~ same_model + log10(n_params1) + log10(n_params2)))
+
+
+summary(lm(data = cor_long %>% filter(same_model == FALSE),
+             cor ~ log10(n_params1) + log10(n_params2)))
+
+
+
+
+cor_long %>%
+  group_by(same_model) %>%
+  summarise(mean_cor = mean(cor),
+            sd_cor = sd(cor))
+
+cor_long %>%
+  group_by(same_model, n_params1) %>%
+  summarise(mean_cor = mean(cor))
+
+cor_long %>%
+  mutate(abs_diff_params = round(abs(log10(n_params2 - log10(n_params1))), 2)) %>%
+  mutate(diff_params = abs(n_params2 - n_params1)) %>%
+  filter(same_model == FALSE) %>%
+  group_by(diff_params) %>%
+  summarise(mean_cor = mean(cor))
+
+
+
+
+### MDS
+df_params = df_pythia_models %>%
+  dplyr::select(model, n_params) %>%
+  distinct() 
+
+
+mds_by_step <- df_wide %>%
+  drop_na() %>%
+  summarise(
+    mds_df = list({
+      cor_mat <- cor(dplyr::select(cur_data(), starts_with("pythia-")), use = "pairwise.complete.obs")
+      dist_mat <- as.dist(1 - cor_mat)
+      mds <- cmdscale(dist_mat, k = 2)
+      as_tibble(mds, .name_repair = "unique") %>%
+        mutate(model_id = colnames(cor_mat)) 
+    }),
+    .groups = "drop"
+  ) %>%
+  unnest(mds_df) %>%
+  separate(model_id, into = c("model", "seed_name", "Layer"), sep = " - ") %>%
+  rename(x = `...1`, y = `...2`) %>%
+  inner_join(df_params)
+
+
+mds_by_step %>%
+  ggplot(aes(x, y, 
+           color = reorder(model, n_params))) +
+  geom_jitter(size = 5, alpha = .7, width = .05) +
+  theme_bw() +
+  labs(x = "MDS 1",
+       y = "MDS 2",
+       color = "") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(4, option = "mako",
+                                                   begin = 0.7, end = 0.15))
+  
+
+
+
+# Calculate centroids for each model size
+centroids <- mds_by_step %>%
+  group_by(n_params) %>%
+  summarise(
+    centroid_x = mean(x),
+    centroid_y = mean(y),
+    .groups = "drop"
+  )
+
+# Calculate separation ratio for each model size
+separation_stats <- centroids %>%
+  rowwise() %>%
+  mutate(
+    # Distance to other centroids
+    inter_dist = {
+      current_params <- n_params
+      other_centroids <- centroids %>% filter(n_params != current_params)
+      mean(sqrt((other_centroids$centroid_x - centroid_x)^2 + 
+                (other_centroids$centroid_y - centroid_y)^2))
+    },
+    # Within-cluster spread
+    within_dist = {
+      current_params <- n_params
+      current_x <- centroid_x
+      current_y <- centroid_y
+      mds_by_step %>% 
+        filter(n_params == current_params) %>%
+        summarise(spread = mean(sqrt((x - current_x)^2 + (y - current_y)^2))) %>%
+        pull(spread)
+    }
+  ) %>%
+  mutate(sep_ratio = inter_dist / within_dist) %>%
+  ungroup()
+
+print(separation_stats)
+```
+
+
+
