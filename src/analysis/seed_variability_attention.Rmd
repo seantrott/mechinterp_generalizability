@@ -317,6 +317,8 @@ summary(lmer(data = df_by_head_max_attention,
              mean_1back ~ log10(step_modded) + (1|seed_name) + (1|model),
              REML = FALSE))
 
+
+
 ```
 
 ## Individual heads
@@ -424,7 +426,7 @@ results_summ = results_df %>%
 results_summ %>%
   ggplot(aes(x = n_params,
              y = m_step,
-             color = model)) +
+             color = reorder(model, n_params))) +
   geom_jitter(size = 5, alpha = .7, width = .05) +
   scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
                                                    begin = 0.8, end = 0.15)) + 
@@ -480,7 +482,7 @@ df_emerg_summ = df_emergence %>%
 df_emerg_summ %>%
   ggplot(aes(x = n_params,
              y = m_step,
-             color = model)) +
+             reorder(model, n_params))) +
   geom_jitter() +
   scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
                                                    begin = 0.8, end = 0.15)) + 
@@ -567,7 +569,7 @@ summary(lmer(data = df_peak,
 df_peak %>%
   ggplot(aes(x = n_params,
              y = max_attn,
-             color = model)) +
+             color = reorder(model, n_params))) +
   geom_jitter(size = 5, alpha = .7, width = .05) +
   scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
                                                    begin = 0.8, end = 0.15)) + 
@@ -611,7 +613,7 @@ summary(lmer(data = slopes_df,
 slopes_df %>%
   ggplot(aes(x = n_params,
              y = estimate,
-             color = model)) +
+             color = reorder(model, n_params))) +
   geom_jitter(size = 5, alpha = .7, width = .05) +
   scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
                                                    begin = 0.8, end = 0.15)) + 
@@ -822,5 +824,46 @@ separation_stats <- centroids %>%
 print(separation_stats)
 ```
 
+
+## Compare previous and first-token attention variance
+
+```{r}
+### Track max previous token heads at each time point for each seed, across layer/head
+df_by_head_max_attention_prev = df_pythia_models %>%
+  group_by(model, n_params, step_modded, seed, seed_name) %>%
+  slice_max(mean_1back)
+
+### Track max previous token heads at each time point for each seed, across layer/head
+df_by_head_max_attention_first = df_pythia_models %>%
+  group_by(model, n_params, step_modded, seed, seed_name) %>%
+  slice_max(mean_first)
+
+df_by_head_max_attention_prev %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(
+    sd_across_seeds = sd(mean_1back),
+    mean_across_seeds = mean(mean_1back),
+    cv = sd_across_seeds / mean_across_seeds
+  ) %>%
+  group_by(model, n_params) %>%
+  summarise(
+    mean_sd = mean(sd_across_seeds),
+    mean_cv = mean(cv)
+  )
+
+df_by_head_max_attention_first %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(
+    sd_across_seeds = sd(mean_first),
+    mean_across_seeds = mean(mean_first),
+    cv = sd_across_seeds / mean_across_seeds
+  ) %>%
+  group_by(model, n_params) %>%
+  summarise(
+    mean_sd = mean(sd_across_seeds),
+    mean_cv = mean(cv)
+  )
+
+```
 
 
