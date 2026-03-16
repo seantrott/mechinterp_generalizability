@@ -27,7 +27,7 @@ MODELS = [
 
 SEQ_LEN = 50
 NUM_SAMPLES = 100
-BATCH_SIZE = 50  # adjust down if OOM on larger models
+BATCH_SIZE = 10
 
 SAVEPATH = "data/processed/induction_results"
 

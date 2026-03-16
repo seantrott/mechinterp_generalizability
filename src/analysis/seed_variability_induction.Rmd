@@ -282,7 +282,8 @@ df_ar_by_step %>%
 
 
 summary(lmer(data = df_by_head_max_attention,
-             mean_ps ~ log10(step_modded) + (1|seed_name) + (1|model),
+             mean_ar_acc ~ log10(step_modded) * log10(n_params) +
+               (1|seed_name) + (1|model),
              REML = FALSE))
 
 
@@ -365,7 +366,7 @@ df_pythia_models_head_summaries %>%
   facet_wrap(~seed_name)
 
 
-### 14M
+### 70m
 df_pythia_models_head_summaries %>%
   filter(layer == 4) %>%
   filter(model == "pythia-70m") %>%
@@ -388,6 +389,54 @@ df_pythia_models_head_summaries %>%
   scale_color_viridis(option = "mako", discrete=TRUE) +
   facet_wrap(~seed_name)
 
+
+
+### 160m
+df_pythia_models_head_summaries %>%
+  filter(layer == 6) %>%
+  filter(model == "pythia-160m") %>%
+  ggplot(aes(x = step_modded,
+             y = mean_ps,
+             color = factor(head))) +
+  geom_point(size = 1.5, alpha = .7) +
+  geom_line(size = 2, alpha = .7) +
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "Prefix-Matching Score (PS)",
+       color = "Attention Head",
+       title = "Layer 6 Heads (160M)") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, 
+           linetype = "dotted", 
+           size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_viridis(option = "mako", discrete=TRUE) +
+  facet_wrap(~seed_name)
+
+
+### 160m
+df_pythia_models_head_summaries %>%
+  filter(layer == 7) %>%
+  filter(model == "pythia-410m") %>%
+  ggplot(aes(x = step_modded,
+             y = mean_ps,
+             color = factor(head))) +
+  geom_point(size = 1.5, alpha = .7) +
+  geom_line(size = 2, alpha = .7) +
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "Prefix-Matching Score (PS)",
+       color = "Attention Head",
+       title = "Layer 6 Heads (410M)") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, 
+           linetype = "dotted", 
+           size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_viridis(option = "mako", discrete=TRUE) +
+  facet_wrap(~seed_name)
 
 
 ```
