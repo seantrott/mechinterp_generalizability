@@ -168,7 +168,8 @@ def main():
                 print(f"  {model_name} @ {checkpoint}")
                 try:
                     model = GPTNeoXForCausalLM.from_pretrained(
-                        model_name, revision=checkpoint
+                        model_name, revision=checkpoint,
+                        attn_implementation="eager"
                     )
                 except Exception as e:
                     print(f"  Failed to load: {e}")
