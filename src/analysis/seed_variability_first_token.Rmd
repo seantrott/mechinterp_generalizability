@@ -428,21 +428,22 @@ newdat_all <- tibble(
   mutate(step_modded = 10^log_step,
          gam_pred = predict(gam_all, newdata = .))
 
+grand_avg_first <- df_by_head_max_attention %>%
+  group_by(step_modded) %>%
+  summarise(grand_mean = mean(mean_first))
 
-# Plot seed-level + average + OVERALL GAM across all facets
 df_by_head_max_attention %>%
   ggplot(aes(x = step_modded,
              y = mean_first,
              color = factor(seed_name))) +
-  geom_line(size = .6, alpha = .4) +   # individual curves
+  geom_line(size = .6, alpha = .4) +
   geom_line(data = summary_avg, 
             aes(x = step_modded, y = mean_across_seeds), 
-            color = "black", size = 2) +      # per-model average
-  geom_line(data = newdat_all, 
-            aes(x = step_modded, y = gam_pred), 
+            color = "black", size = 2) +
+  geom_line(data = grand_avg_first, 
+            aes(x = step_modded, y = grand_mean), 
             inherit.aes = FALSE, 
-            alpha = .6,
-            color = "red", size = 1.5) +        # overall GAM overlay
+            color = "red", size = 1.5) +
   theme_minimal() +
   labs(x = "Training Step (Log10)",
        y = "Max First-Token Attention",

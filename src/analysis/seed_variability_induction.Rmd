@@ -74,14 +74,17 @@ df_pythia_models_head_summaries = df_pythia_models %>%
 
 # Final-step attention
 
+
 ## First token heads: a summary
 
 ```{r final_step_first_token}
 
+
+
 df_by_head_seed = df_pythia_models_head_summaries %>%
   filter(step_modded == 143001) %>%
   group_by(mpath) %>%
-  mutate(z_ps = scale(mean_ps))
+  mutate(z_ps = scale(mean_ps)) 
 
 
 ### Max by layer
@@ -94,12 +97,12 @@ df_by_head_seed %>%
   geom_tile() +
   labs(x = "Layer",
        y = "Seed",
-       fill = "Max PS Score") +
+       fill = "Max Prefix-Matching Score") +
   scale_fill_gradient2(low = "blue",
                        mid = "white",
                        high = "red",
                        midpoint = 0, 
-                       name = "Max PS Score") +
+                       name = "Max Prefix-Matching Score") +
   theme_minimal() +
   theme(text = element_text(size = 15),
         strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
@@ -118,12 +121,12 @@ df_by_head_seed %>%
   geom_tile() +
   labs(x = "Layer",
        y = "Seed",
-       fill = "Max PS Score (z-scored)") +
+       fill = "Max Prefix-Matching Score (z-scored)") +
   scale_fill_gradient2(low = "blue",
                        mid = "white",
                        high = "red",
                        midpoint = 0, 
-                       name = "Max PS Score (z-scored)") +
+                       name = "Max Prefix-Matching Score (z-scored)") +
   theme_minimal() +
   theme(text = element_text(size = 15),
         strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
@@ -185,7 +188,7 @@ ggplot(summary_df, aes(x = layer, y = avg_max_ratio,
                   ymax = avg_max_ratio + se_max_ratio,
                   fill = reorder(model, n_params)), alpha = 0.2, color = NA) +
   labs(x = "Layer",
-       y = "Max PS Score",
+       y = "Max Prefix-Matching Score",
        color = "Model", fill = "Model") +
   scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
                                                    begin = 0.8, end = 0.15)) + 
@@ -219,7 +222,7 @@ ggplot(summary_df, aes(x = prop_binned, y = avg_max_ratio,
                   ymax = avg_max_ratio + se_max_ratio,
                   fill = reorder(model, n_params)), alpha = 0.2, color = NA) +
   labs(x = "Layer Depth",
-       y = "Max PS Score",
+       y = "Max Prefix-Matching Score",
        color = "", fill = "") +
   scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
                                                    begin = 0.8, end = 0.15)) + 
@@ -245,7 +248,7 @@ summary(lmer(mean_ps ~ prop_layer + (1|head) + (1|model),
 
 ## Track AR Score
 
-```{r ar_over_time}
+```{r ar_over_time_ar}
 
 df_ar_by_step = df_pythia_models_head_summaries %>%
   group_by(model, n_params, step_modded, seed, seed_name) %>%
@@ -281,10 +284,6 @@ df_ar_by_step %>%
 
 
 
-summary(lmer(data = df_by_head_max_attention,
-             mean_ar_acc ~ log10(step_modded) * log10(n_params) +
-               (1|seed_name) + (1|model),
-             REML = FALSE))
 
 
 
@@ -294,7 +293,7 @@ summary(lmer(data = df_by_head_max_attention,
 
 ## Track Max Prefix Score
 
-```{r ps_over_time}
+```{r ps_over_time_ps}
 
 ### Track max PS at each time point for each seed, across layer/head
 df_by_head_max_attention = df_pythia_models_head_summaries %>%
@@ -341,7 +340,7 @@ summary(lmer(data = df_by_head_max_attention,
 
 ## Individual heads
 
-```{r individual_heads}
+```{r individual_heads_ps}
 ### 14M
 df_pythia_models_head_summaries %>%
   filter(layer == 4) %>%
@@ -446,7 +445,7 @@ df_pythia_models_head_summaries %>%
 
 Do bigger models show an earlier onset of their biggest change?
 
-```{r onset_first}
+```{r onset_induction}
 ### First, try looking at first onset of a big change, trying out different ratios
 ### Calculate cross-step ratio
 df_diff <- df_by_head_max_attention %>%
@@ -543,6 +542,10 @@ newdat_all <- tibble(
 
 
 # Plot seed-level + average + OVERALL GAM across all facets
+grand_avg <- df_by_head_max_attention %>%
+  group_by(step_modded) %>%
+  summarise(grand_mean = mean(mean_ps))
+
 df_by_head_max_attention %>%
   ggplot(aes(x = step_modded,
              y = mean_ps,
@@ -551,14 +554,11 @@ df_by_head_max_attention %>%
   geom_line(data = summary_avg, 
             aes(x = step_modded, y = mean_across_seeds), 
             color = "black", size = 2) +      # per-model average
-  geom_line(data = newdat_all, 
-            aes(x = step_modded, y = gam_pred), 
-            inherit.aes = FALSE, 
-            alpha = .6,
-            color = "red", size = 1.5) +        # overall GAM overlay
+  geom_line(data = grand_avg, aes(x = step_modded, y = grand_mean),
+            color = "red", size = 1.2, inherit.aes = FALSE) +
   theme_minimal() +
   labs(x = "Training Step (Log10)",
-       y = "Max PS Score",
+       y = "Max Prefix-Matching Score",
        color = "") +
   scale_x_log10() +
   geom_vline(xintercept = 1000, linetype = "dotted", size = 1.2) +
@@ -573,7 +573,7 @@ df_by_head_max_attention %>%
 
 What about reduced peak?
 
-```{r peak_first}
+```{r peak_induction}
 df_peak <- df_by_head_max_attention %>%
   group_by(mpath, model, seed_name, n_params) %>%
   summarise(max_attn = max(mean_ps))
@@ -605,7 +605,7 @@ df_peak %>%
 
 What about reduced slope?
 
-```{r slope_first}
+```{r slope_induction}
 df_by_head_max_attention <- df_by_head_max_attention %>%
   mutate(log_step = log10(step_modded))
 
@@ -650,7 +650,7 @@ slopes_df %>%
 ## Correlation matrix
 
 
-```{r mds_first}
+```{r mds_induction}
 df_by_layer = df_by_head_max_attention %>%
   group_by(model, seed_name, step_modded) %>%
   summarise(max_attn = max(mean_ps))

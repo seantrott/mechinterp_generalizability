@@ -522,20 +522,22 @@ newdat_all <- tibble(
          gam_pred = predict(gam_all, newdata = .))
 
 
-# Plot seed-level + average + OVERALL GAM across all facets
+grand_avg_1back <- df_by_head_max_attention %>%
+  group_by(step_modded) %>%
+  summarise(grand_mean = mean(mean_1back))
+
 df_by_head_max_attention %>%
   ggplot(aes(x = step_modded,
              y = mean_1back,
              color = factor(seed_name))) +
-  geom_line(size = .6, alpha = .4) +   # individual curves
+  geom_line(size = .6, alpha = .4) +
   geom_line(data = summary_avg, 
             aes(x = step_modded, y = mean_across_seeds), 
-            color = "black", size = 2) +      # per-model average
-  geom_line(data = newdat_all, 
-            aes(x = step_modded, y = gam_pred), 
+            color = "black", size = 2) +
+  geom_line(data = grand_avg_1back, 
+            aes(x = step_modded, y = grand_mean), 
             inherit.aes = FALSE, 
-            alpha = .6,
-            color = "red", size = 1.5) +        # overall GAM overlay
+            color = "red", size = 1.5) +
   theme_minimal() +
   labs(x = "Training Step (Log10)",
        y = "Max 1-back Attention",
@@ -547,7 +549,6 @@ df_by_head_max_attention %>%
   scale_color_manual(values = viridisLite::viridis(9, option = "mako", 
                                                    begin = 0.8, end = 0.15)) + 
   facet_wrap(~reorder(model, n_params))
-
 ```
 
 
