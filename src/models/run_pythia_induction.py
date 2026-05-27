@@ -171,7 +171,9 @@ def main():
             try:
                 model = GPTNeoXForCausalLM.from_pretrained(
                     model_name, revision=checkpoint,
-                    attn_implementation="eager"
+                    attn_implementation="eager",
+                    torch_dtype=torch.float16,    ## Trying this for 12B     
+                    low_cpu_mem_usage=False,  ## Trying this for 12B
                 )
             except Exception as e:
                 print(f"  Failed to load: {e}")
