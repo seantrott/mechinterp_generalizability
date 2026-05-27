@@ -19,7 +19,7 @@ csv_files = glob(os.path.join(input_dir, "*.csv"))
 usecols = [
     "mpath", "step", "revision", "Layer", "Head",
     "prev_to_self_ratio", "prev_to_all_ratio", "prev_token_fraction", 
-    "n_params", "n_layers", "1-back attention",
+    "n_params", "n_layers", "first_token", "1-back attention",
 ]
 
 # Loop through each file and summarize
