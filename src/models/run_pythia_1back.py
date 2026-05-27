@@ -73,17 +73,23 @@ def main(dfs, revisions, mpath):
         model_name = mpath  # main suite — no seed suffix
         print(model_name)
 
-        ### Set up savepath
+        ### Set up savepaths
         savepath = "data/processed/attentions_main"
+        summary_path = "data/processed/attention_main_summaries"
         if not os.path.exists(savepath):
-            os.mkdir(savepath)
+            os.makedirs(savepath)
+
         filename = ("natural_stories-rs_model-" + mpath.split("/")[1]
                     + "-" + checkpoint + ".csv")
+        summary_filename = filename.replace(".csv", "_summary.csv")
         print(filename)
 
         print("Checking if we've already run this analysis...")
         if os.path.exists(os.path.join(savepath, filename)):
             print("Already run this model for this checkpoint.")
+            continue
+        if os.path.exists(os.path.join(summary_path, summary_filename)):
+            print("Summary already exists — raw was deleted to save space. Skipping.")
             continue
 
         ### Load model
