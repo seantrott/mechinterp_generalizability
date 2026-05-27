@@ -173,14 +173,14 @@ def main():
                 model = GPTNeoXForCausalLM.from_pretrained(
                     model_name, revision=checkpoint,
                     attn_implementation="eager",
-                    torch_dtype=torch.float16,    ## Trying this for 12B     
                     low_cpu_mem_usage=False,  ## Trying this for 12B
                 )
             except Exception as e:
                 print(f"  Failed to load: {e}")
                 continue
 
-            model.to(device).eval()
+            # model.to(device).eval()
+            model.eval()
             config = model.config
             n_params = count_parameters(model)
 
