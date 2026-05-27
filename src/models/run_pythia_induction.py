@@ -40,7 +40,8 @@ SAVEPATH = "data/processed/induction_results_main"
 def generate_revisions_limited():
     """Checkpoints matching your original script."""
     revisions = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512,
-                 1000, 10000, 50000, 100000, 143000]
+                 1000, 10000, # 50000, 
+                 100000, 143000]
     return [f"step{step}" for step in revisions]
 
 
