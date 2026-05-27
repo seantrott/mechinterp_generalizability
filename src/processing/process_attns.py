@@ -37,7 +37,8 @@ for filepath in tqdm(csv_files):
                   mean_prev_self_ratio=("prev_to_self_ratio", "mean"),
                   mean_prev_all_ratio=("prev_to_all_ratio", "mean"),
                   prev_fraction=("prev_token_fraction", "mean"),
-                  mean_1back=("1-back attention", "mean")
+                  mean_1back=("1-back attention", "mean"),
+                  mean_first=("first_token", "mean")
               )
               .reset_index()
         )
