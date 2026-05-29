@@ -77,15 +77,20 @@ def main(dfs, models):
         print(model_name)
 
         savepath = "data/processed/attentions_gemstones"
+        summary_path = "data/processed/attention_gemstones_summaries"   # NEW
         if not os.path.exists(savepath):
             os.makedirs(savepath)
         filename = ("natural_stories-rs_model-" + mpath.split("/")[1]
                     + ".csv")
+        summary_filename = filename.replace(".csv", "_summary.csv")     # NEW
         print(filename)
 
         print("Checking if we've already run this analysis...")
         if os.path.exists(os.path.join(savepath, filename)):
             print("Already run this model.")
+            continue
+        if os.path.exists(os.path.join(summary_path, summary_filename)): # NEW
+            print("Summary already exists — raw was deleted to save space. Skipping.")
             continue
 
         try:
