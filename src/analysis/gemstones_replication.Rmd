@@ -1,0 +1,1027 @@
+---
+title: "Replication in Gemstones models (final step)"
+author: "Sean Trott"
+date: "August 15, 2025"
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dpi = 300, fig.format = "pdf")
+```
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(lme4)
+library(viridis)
+library(ggridges)
+library(lmerTest)
+library(ggrepel)
+library(ggcorrplot)
+library(vroom)
+library(ggeffects)
+library(broom.mixed)
+library(kableExtra)
+library(MuMIn)
+
+all_colors <- viridis::viridis(10, option = "mako")
+my_colors <- all_colors[c(3, 5, 7)]  # Selecting specific colors from the palette
+```
+
+# Induction analysis
+
+## Load Gemstones data
+
+
+```{r include=FALSE}
+## setwd("/Users/seantrott/Dropbox/UCSD/Research/NLMs/epistemology/mechinterp_generalizability/src/analysis")
+directory_path <- "../../data/processed/induction_results_gemstones/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+df_models <- bind_rows(csv_list) %>%
+  mutate(model = sub("Gemstone-Models/Gemstone-", "", mpath))  %>%
+  mutate(layer = layer + 1)
+nrow(df_models)
+
+
+### Create head-level summaries
+df_gemstones_models_head_summaries = df_models %>%
+  group_by(mpath, n_params, model,
+           layer, head) %>%
+  summarise(mean_ps = mean(ps),
+            mean_ar_acc = mean(ar_acc),
+            mean_ar_rank = mean(ar_mean_rank))
+
+```
+
+
+
+
+## Positional analysis
+
+```{r induction_head_pos_gemstones}
+
+
+### Max by layer
+df_gemstones_models_head_summaries %>%
+  group_by(model, head, layer, n_params) %>%
+  summarise(max_mean = max(mean_ps)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max Prefix-Matching Score") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max Prefix-Matching Score") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params))
+
+
+
+
+### How does *max* attention per layer change across model size?
+df_layerwise_attn <- df_gemstones_models_head_summaries %>%
+  group_by(mpath) %>%
+  mutate(z_ps = scale(mean_ps)) %>%
+  group_by(mpath, layer, n_params) %>%
+  summarise(
+    max_attention = max(z_ps),
+    se_attention = sd(z_ps) / sqrt(n()),
+    .groups = "drop"
+  )
+
+### 
+summary(lm(data = df_layerwise_attn,
+             max_attention ~ log10(n_params) * layer))
+
+
+
+### Relative layer
+df_gemstones_models_head_summaries = df_gemstones_models_head_summaries %>%
+  group_by(model) %>%
+  mutate(max_layer = max(layer),
+         prop_layer = layer / max_layer) %>%
+  ### Scale for interpreting the coefficients more easily
+  mutate(prop_layer_scaled = scale(prop_layer)) %>%
+  ungroup()
+
+
+
+
+
+
+### Layer depth across all models
+df_gemstones_models_head_summaries %>%
+  group_by(model, prop_layer) %>%
+  summarise(max_ps = max(mean_ps), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(bin_mid) %>%
+  summarise(mean_ps = mean(max_ps),
+            se = sd(max_ps)/sqrt(n()),
+            .groups = "drop") %>%
+  ggplot(aes(x = bin_mid, y = mean_ps)) +
+  geom_ribbon(aes(ymin = mean_ps - se, ymax = mean_ps + se), alpha = 0.3) +
+  geom_line(size = 1.2) +
+  labs(x = "Layer depth", y = "Max prefix-matching score") +
+  theme_minimal(base_size = 15)
+
+
+
+### Visualizing relative layer
+summary_df <- df_gemstones_models_head_summaries %>%
+  mutate(binned_prop_layer = ntile(prop_layer, 6)) %>%
+  mutate(prop_binned = binned_prop_layer / 6) %>%
+  group_by(model, n_params, prop_binned) %>%
+  summarise(
+    max_ratio_per_seed = max(mean_ps, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(model, prop_binned, n_params) %>%
+  summarise(
+    avg_max_ratio = mean(max_ratio_per_seed, na.rm = TRUE),
+    se_max_ratio = sd(max_ratio_per_seed, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  )
+
+### For each model
+ggplot(summary_df, aes(x = prop_binned, y = avg_max_ratio, 
+                       color = reorder(model, n_params))) +
+  geom_line(size = .5) +
+  labs(x = "Layer Depth",
+       y = "Max Prefix-Matching Score",
+       color = "", fill = "") +
+  scale_color_manual(values = viridisLite::viridis(22, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_fill_manual(values = viridisLite::viridis(22, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "none") 
+
+
+
+### Analyses
+summary(lmer(mean_ps ~ prop_layer + (1|head) + (1|model), 
+             data = df_gemstones_models_head_summaries))
+
+```
+
+
+
+### Relative vs. absolute position
+
+```{r gemstones_peak_layer}
+### Relative vs. absolute position
+
+# Identify the layer with peak PS for each model
+df_peak_layer = df_gemstones_models_head_summaries %>%
+  mutate(
+    width = as.numeric(str_extract(model, "(?<=Gemstone-)\\d+"))
+  ) %>%
+  group_by(model, mpath, n_params, width) %>%
+  mutate(max_layer = max(layer)) %>%
+  mutate(aspect_ratio = width / max_layer) %>%
+  slice_max(mean_ps, n = 1, with_ties = FALSE) %>%
+  mutate(peak_layer_depth = layer / max_layer) %>%
+  select(model, mpath, n_params, max_layer, peak_layer = layer, 
+         peak_layer_depth, aspect_ratio, width) %>%
+  ungroup()
+
+
+### Relative layer depth
+df_peak_layer %>%
+  ggplot(aes(x = peak_layer_depth)) +
+  geom_density(fill = my_colors[2], alpha = 0.6, color = NA) +
+  geom_vline(xintercept = median(df_peak_layer$peak_layer_depth),
+             linetype = "dashed") +
+  geom_rug(length = unit(0.05, "npc")) +
+  labs(x = "Relative layer depth of peak prefix-matching score",
+       y = "Density") +
+  xlim(0, 1) +
+  theme_minimal(base_size = 15)
+
+
+### 
+
+
+# How does the number of possible layers relate to 
+# *peak relative layer* and *peak layer*?
+m_relative = lm(peak_layer_depth ~ log10(max_layer), data = df_peak_layer)
+m_absolute = lm(peak_layer ~ log10(max_layer), data = df_peak_layer)
+summary(m_relative)  
+summary(m_absolute) 
+
+
+
+df_peak_layer %>%
+  ggplot(aes(x = max_layer,
+             y = peak_layer_depth)) +
+  geom_point() +
+  scale_x_log10() +
+  labs(x = "Number of Layers (Log10)",
+       y = "Layer Depth of Peak PS") +
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "none") 
+
+
+df_peak_layer %>%
+  ggplot(aes(x = max_layer,
+             y = peak_layer)) +
+  geom_point() +
+  scale_x_log10() +
+  labs(x = "Number of Layers",
+       y = "Layer with Peak PS") +
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "none") 
+
+
+```
+
+
+# 1-back and first-token
+
+## Load Gemstones data
+
+
+```{r include=FALSE}
+## setwd("/Users/seantrott/Dropbox/UCSD/Research/NLMs/epistemology/mechinterp_generalizability/src/analysis")
+directory_path <- "../../data/processed/attention_gemstones_summaries/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+df_gemstones_models_1back_summaries <- bind_rows(csv_list) %>%
+  mutate(model = sub("Gemstone-Models/Gemstone-", "", mpath))  %>%
+    filter(Layer > 0) %>%
+  mutate(head = Head - 1,
+         layer = Layer)
+  
+nrow(df_models)
+
+
+
+
+```
+
+## 1-back
+
+```{r 1back_babylm_pos}
+
+### Max by layer
+df_gemstones_models_1back_summaries %>%
+  group_by(model, head, layer, n_params) %>%
+  summarise(max_mean = max(mean_1back)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max 1-back Attention") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max 1-back Attention") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params))
+
+
+
+```
+
+
+### Relative vs. absolute position
+
+```{r gemstones_peak_layer_1back}
+### Relative vs. absolute position
+
+# Identify the layer with peak 1back for each model
+df_peak_layer = df_gemstones_models_1back_summaries %>%
+  mutate(
+    width = as.numeric(str_extract(model, "(?<=Gemstone-)\\d+"))
+  ) %>%
+  group_by(model, n_params, width) %>%
+  mutate(max_layer = max(layer)) %>%
+  mutate(aspect_ratio = width / max_layer) %>%
+  slice_max(mean_1back, n = 1, with_ties = FALSE) %>%
+  mutate(peak_layer_depth = layer / max_layer) %>%
+  select(model, n_params, max_layer, peak_layer = layer, 
+         peak_layer_depth, aspect_ratio, width) %>%
+  ungroup()
+
+
+### Relative layer depth
+df_peak_layer %>%
+  ggplot(aes(x = peak_layer_depth)) +
+  geom_density(fill = my_colors[2], alpha = 0.6, color = NA) +
+  geom_vline(xintercept = median(df_peak_layer$peak_layer_depth),
+             linetype = "dashed") +
+  geom_rug(length = unit(0.05, "npc")) +
+  labs(x = "Relative layer depth of peak 1-back strength",
+       y = "Density") +
+  xlim(0, 1) +
+  theme_minimal(base_size = 15)
+
+
+### 
+
+
+# How does the number of possible layers relate to 
+# *peak relative layer* and *peak layer*?
+m_relative = lm(peak_layer_depth ~ log10(max_layer), data = df_peak_layer)
+m_absolute = lm(peak_layer ~ log10(max_layer), data = df_peak_layer)
+summary(m_relative)  
+summary(m_absolute) 
+
+
+
+df_peak_layer %>%
+  ggplot(aes(x = max_layer,
+             y = peak_layer_depth)) +
+  geom_point() +
+  scale_x_log10() +
+  labs(x = "Number of Layers (Log10)",
+       y = "Layer Depth of Peak 1-back") +
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "none") 
+
+
+df_peak_layer %>%
+  ggplot(aes(x = max_layer,
+             y = peak_layer)) +
+  geom_point() +
+  scale_x_log10() +
+  labs(x = "Number of Layers",
+       y = "Layer with Peak PS") +
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "none") 
+
+
+```
+
+
+## First-token
+
+
+### Relative vs. absolute position
+
+```{r gemstones_peak_layer_first_token}
+### Relative vs. absolute position
+
+# Identify the layer with peak 1back for each model
+df_peak_layer = df_gemstones_models_1back_summaries %>%
+  mutate(
+    width = as.numeric(str_extract(model, "(?<=Gemstone-)\\d+"))
+  ) %>%
+  group_by(model, n_params, width) %>%
+  mutate(max_layer = max(layer)) %>%
+  mutate(aspect_ratio = width / max_layer) %>%
+  slice_max(mean_first, n = 1, with_ties = FALSE) %>%
+  mutate(peak_layer_depth = layer / max_layer) %>%
+  select(model, n_params, max_layer, peak_layer = layer, 
+         peak_layer_depth, aspect_ratio, width) %>%
+  ungroup()
+
+
+### Relative layer depth
+df_peak_layer %>%
+  ggplot(aes(x = peak_layer_depth)) +
+  geom_density(fill = my_colors[2], alpha = 0.6, color = NA) +
+  geom_vline(xintercept = median(df_peak_layer$peak_layer_depth),
+             linetype = "dashed") +
+  geom_rug(length = unit(0.05, "npc")) +
+  labs(x = "Relative layer depth of peak first token strength",
+       y = "Density") +
+  xlim(0, 1) +
+  theme_minimal(base_size = 15)
+
+
+### 
+
+
+# How does the number of possible layers relate to 
+# *peak relative layer* and *peak layer*?
+m_relative = lm(peak_layer_depth ~ log10(max_layer), data = df_peak_layer)
+m_absolute = lm(peak_layer ~ log10(max_layer), data = df_peak_layer)
+summary(m_relative)  
+summary(m_absolute) 
+
+
+
+df_peak_layer %>%
+  ggplot(aes(x = max_layer,
+             y = peak_layer_depth)) +
+  geom_point() +
+  scale_x_log10() +
+  labs(x = "Number of Layers (Log10)",
+       y = "Layer Depth of Peak First Token") +
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "none") 
+
+
+df_peak_layer %>%
+  ggplot(aes(x = max_layer,
+             y = peak_layer)) +
+  geom_point() +
+  scale_x_log10() +
+  labs(x = "Number of Layers",
+       y = "Layer with Peak First Token") +
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "none") 
+
+
+```
+
+
+# Plotting all together
+
+## Max scores across layers
+
+```{r gemstones_all_scores_layers_max}
+df_1back_prop <- df_gemstones_models_1back_summaries %>%
+  group_by(model) %>%
+  mutate(max_layer = max(layer),
+         prop_layer = layer / max_layer) %>%
+  ungroup()
+
+df_ps_max <- df_gemstones_models_head_summaries %>%
+  group_by(model, prop_layer) %>%
+  summarise(max_val = max(mean_ps), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(bin_mid) %>%
+  summarise(mean_val = mean(max_val), se = sd(max_val) / sqrt(n()), .groups = "drop") %>%
+  mutate(metric = "Prefix-matching (PS)")
+
+df_1back_max <- df_1back_prop %>%
+  group_by(model, prop_layer) %>%
+  summarise(max_val = max(mean_1back), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(bin_mid) %>%
+  summarise(mean_val = mean(max_val), se = sd(max_val) / sqrt(n()), .groups = "drop") %>%
+  mutate(metric = "1-back")
+
+df_first_max <- df_1back_prop %>%
+  group_by(model, prop_layer) %>%
+  summarise(max_val = max(mean_first), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(bin_mid) %>%
+  summarise(mean_val = mean(max_val), se = sd(max_val) / sqrt(n()), .groups = "drop") %>%
+  mutate(metric = "First-token")
+
+df_depth_all <- bind_rows(df_ps_max, df_1back_max, df_first_max) %>%
+  mutate(metric = factor(metric,
+                         levels = c("First-token", "1-back", "Prefix-matching (PS)")))
+
+df_depth_all %>%
+  ggplot(aes(x = bin_mid, y = mean_val, color = metric, fill = metric)) +
+  geom_ribbon(aes(ymin = mean_val - se, ymax = mean_val + se),
+              alpha = 0.3, color = NA) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = my_colors) +
+  scale_fill_manual(values = my_colors) +
+  facet_wrap(~metric, scales = "free_y") +
+  labs(x = "Layer depth", y = "Mean of per-model max", color = NULL, fill = NULL) +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "none")
+```
+
+## Mean score
+
+```{r gemstones_all_scores_layers_mean}
+df_ps_mean <- df_gemstones_models_head_summaries %>%
+  group_by(model, prop_layer) %>%
+  summarise(mean_per_model = mean(mean_ps), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(bin_mid) %>%
+  summarise(mean_val = mean(mean_per_model), se = sd(mean_per_model) / sqrt(n()), .groups = "drop") %>%
+  mutate(metric = "Prefix-matching (PS)")
+
+df_1back_mean <- df_1back_prop %>%
+  group_by(model, prop_layer) %>%
+  summarise(mean_per_model = mean(mean_1back), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(bin_mid) %>%
+  summarise(mean_val = mean(mean_per_model), se = sd(mean_per_model) / sqrt(n()), .groups = "drop") %>%
+  mutate(metric = "1-back")
+
+df_first_mean <- df_1back_prop %>%
+  group_by(model, prop_layer) %>%
+  summarise(mean_per_model = mean(mean_first), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(bin_mid) %>%
+  summarise(mean_val = mean(mean_per_model), se = sd(mean_per_model) / sqrt(n()), .groups = "drop") %>%
+  mutate(metric = "First-token")
+
+df_depth_all_mean <- bind_rows(df_ps_mean, df_1back_mean, df_first_mean) %>%
+  mutate(metric = factor(metric,
+                         levels = c("First-token", "1-back", "Prefix-matching (PS)")))
+
+df_depth_all_mean %>%
+  ggplot(aes(x = bin_mid, y = mean_val, color = metric, fill = metric)) +
+  geom_ribbon(aes(ymin = mean_val - se, ymax = mean_val + se),
+              alpha = 0.3, color = NA) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = my_colors) +
+  scale_fill_manual(values = my_colors) +
+  facet_wrap(~metric, scales = "free_y") +
+  labs(x = "Layer depth", y = "Mean attention across heads", color = NULL, fill = NULL) +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "none")
+```
+
+
+## Peak layer depth
+
+```{r gemstones_all_peaks}
+
+peak_ps <- df_gemstones_models_head_summaries %>%
+  group_by(model, n_params, max_layer) %>%
+  mutate(max_layer = max(layer)) %>%
+  slice_max(mean_ps, n = 1, with_ties = FALSE) %>%
+  transmute(model, n_params, max_layer,
+            peak_layer_depth = layer / max_layer,
+            metric = "Prefix-matching (PS)") %>%
+  ungroup()
+
+peak_1back <- df_gemstones_models_1back_summaries %>%
+  group_by(model, n_params) %>%
+  mutate(max_layer = max(layer)) %>%
+  slice_max(mean_1back, n = 1, with_ties = FALSE) %>%
+  transmute(model, n_params, max_layer,
+            peak_layer_depth = layer / max_layer,
+            metric = "1-back") %>%
+  ungroup()
+
+peak_first <- df_gemstones_models_1back_summaries %>%
+  group_by(model, n_params) %>%
+  mutate(max_layer = max(layer)) %>%
+  slice_max(mean_first, n = 1, with_ties = FALSE) %>%
+  transmute(model, n_params, max_layer,
+            peak_layer_depth = layer / max_layer,
+            metric = "First-token") %>%
+  ungroup()
+
+df_peak_all <- bind_rows(peak_ps, peak_1back, peak_first) %>%
+  mutate(metric = factor(metric,
+                         levels = c("First-token", "1-back", "Prefix-matching (PS)")))
+
+df_peak_all %>%
+  ggplot(aes(x = peak_layer_depth, y = metric, fill = metric)) +
+  geom_density_ridges(alpha = 0.7, color = NA, scale = 1.1,
+                      rel_min_height = 0.01,
+                      jittered_points = TRUE,
+                      position = position_raincloud(height = 0, ygap = 0.05),
+                      point_shape = "|", point_size = 4,
+                      point_alpha = 1, point_color = "grey20") +
+  geom_vline(xintercept = 0.5, linetype = "dashed", color = "grey40") +
+  scale_fill_manual(values = my_colors) +
+  xlim(0, 1) +
+  labs(x = "Relative layer depth of peak", y = NULL) +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "none")
+
+
+mod_full = lmer(data = df_peak_all %>% filter(metric != "First-token"),
+                peak_layer_depth ~ log10(max_layer) + metric + (1|model))
+summary(mod_full)
+```
+
+
+# Merge with other model families
+
+## Load Pythia seeds, Pythia-main, and BabyLM (Final step)
+
+```{r}
+### Pythia seeds
+pyt_seed_ps_dir <- "../../data/processed/induction_results/"
+pyt_seed_1b_dir <- "../../data/processed/attention_summaries/"
+
+pyt_seed_ps_files <- list.files(pyt_seed_ps_dir, pattern = "step143000-seed", full.names = TRUE)
+pyt_seed_1b_files <- list.files(pyt_seed_1b_dir, pattern = "step143000-seed", full.names = TRUE)
+
+length(pyt_seed_ps_files)
+length(pyt_seed_1b_files)
+
+df_pythia_seed_head_summaries <- pyt_seed_ps_files %>%
+  map(read_csv) %>% bind_rows() %>%
+  mutate(model = sub("^EleutherAI/", "", mpath), layer = layer + 1,
+         seed_name = paste0("seed", seed)) %>%
+  group_by(mpath, n_params, model, seed, seed_name, layer, head) %>%
+  summarise(mean_ps = mean(ps), .groups = "drop")
+
+df_pythia_seed_1back_summaries <- pyt_seed_1b_files %>%
+  map(read_csv) %>% bind_rows() %>%
+  mutate(model = sub("^EleutherAI/", "", mpath), head = Head - 1, layer = Layer,
+         seed_name = paste0("seed", seed)) %>%
+  filter(Layer > 0) %>%
+  group_by(mpath, model, n_params, seed, seed_name, layer, head) %>%
+  summarise(mean_1back = mean(mean_1back), mean_first = mean(mean_first), .groups = "drop")
+
+table(df_pythia_seed_head_summaries$mpath, df_pythia_seed_head_summaries$seed_name)
+
+### Pythia maijn
+pyt_ps_dir   <- "../../data/processed/induction_results_main/"
+pyt_1b_dir   <- "../../data/processed/attention_main_summaries/"
+
+pyt_ps_files <- list.files(pyt_ps_dir, pattern = "step143000\\.csv$", full.names = TRUE)
+pyt_1b_files <- list.files(pyt_1b_dir, pattern = "step143000.*\\.csv$", full.names = TRUE)
+
+df_pythia_models_head_summaries <- pyt_ps_files %>%
+  map(read_csv) %>% bind_rows() %>%
+  mutate(model = sub("^EleutherAI/", "", mpath), layer = layer + 1) %>%
+  group_by(mpath, n_params, model, layer, head) %>%
+  summarise(mean_ps = mean(ps), .groups = "drop")
+
+df_pythia_models_1back_summaries <- pyt_1b_files %>%
+  map(read_csv) %>% bind_rows() %>%
+  mutate(model = sub("^EleutherAI/", "", mpath), head = Head - 1, layer = Layer) %>%
+  filter(Layer > 0) %>%
+  group_by(mpath, model, n_params, layer, head) %>%
+  summarise(mean_1back = mean(mean_1back), mean_first = mean(mean_first), .groups = "drop")
+
+baby_ps_dir <- "../../data/processed/induction_results_babylm/"
+baby_1b_dir <- "../../data/processed/attentions_babylm/"
+
+baby_ps_files <- list.files(baby_ps_dir, pattern = "-main\\.csv$", full.names = TRUE)
+baby_1b_files <- list.files(baby_1b_dir, pattern = "-main\\.csv$", full.names = TRUE)
+
+df_babylm_models_head_summaries <- baby_ps_files %>%
+  map(read_csv) %>% bind_rows() %>%
+  mutate(model = sub("BabyLM-community/", "", mpath), layer = layer + 1) %>%
+  group_by(mpath, n_params, model, layer, head) %>%
+  summarise(mean_ps = mean(ps), .groups = "drop")
+
+df_babylm_models_1back_summaries <- baby_1b_files %>%
+  map(read_csv) %>% bind_rows() %>%
+  mutate(model = sub("BabyLM-community/", "", mpath), head = Head - 1, layer = Layer) %>%
+  filter(Layer > 0) %>%
+  group_by(mpath, model, n_params, layer, head) %>%
+  summarise(mean_1back = mean(`1-back attention`), mean_first = mean(first_token), .groups = "drop")
+```
+
+## Merge
+
+```{r}
+build_peaks <- function(head_df, oneback_df, suite_name) {
+  ps_long <- head_df %>%
+    transmute(suite = suite_name, model, n_params, layer,
+              metric = "Prefix-matching (PS)", value = mean_ps)
+
+  ob_long <- oneback_df %>%
+    transmute(suite = suite_name, model, n_params, layer,
+              metric = "1-back", value = mean_1back)
+
+  ft_long <- oneback_df %>%
+    transmute(suite = suite_name, model, n_params, layer,
+              metric = "First-token", value = mean_first)
+
+  bind_rows(ps_long, ob_long, ft_long) %>%
+    group_by(suite, model, n_params, metric) %>%
+    mutate(max_layer = max(layer)) %>%
+    slice_max(value, n = 1, with_ties = FALSE) %>%
+    mutate(peak_layer_depth = layer / max_layer) %>%
+    ungroup() %>%
+    select(suite, model, n_params, max_layer, peak_layer = layer,
+           peak_layer_depth, metric)
+}
+
+build_peaks_seeded <- function(head_df, oneback_df, suite_name) {
+  ps_long <- head_df %>%
+    transmute(suite = suite_name, model, seed_name, n_params, layer,
+              metric = "Prefix-matching (PS)", value = mean_ps)
+  ob_long <- oneback_df %>%
+    transmute(suite = suite_name, model, seed_name, n_params, layer,
+              metric = "1-back", value = mean_1back)
+  ft_long <- oneback_df %>%
+    transmute(suite = suite_name, model, seed_name, n_params, layer,
+              metric = "First-token", value = mean_first)
+
+  bind_rows(ps_long, ob_long, ft_long) %>%
+    group_by(suite, model, seed_name, n_params, metric) %>%
+    mutate(max_layer = max(layer)) %>%
+    slice_max(value, n = 1, with_ties = FALSE) %>%
+    mutate(peak_layer_depth = layer / max_layer) %>%
+    ungroup() %>%
+    select(suite, model, seed_name, n_params, max_layer,
+           peak_layer = layer, peak_layer_depth, metric)
+}
+
+df_peak_seeds <- build_peaks_seeded(
+  df_pythia_seed_head_summaries,
+  df_pythia_seed_1back_summaries, "Pythia"
+) %>%
+  mutate(metric = factor(metric,
+                         levels = c("First-token", "1-back", "Prefix-matching (PS)")))
+
+
+
+df_peak_all <- bind_rows(
+  build_peaks(df_gemstones_models_head_summaries,
+              df_gemstones_models_1back_summaries, "Gemstones"),
+  build_peaks(df_pythia_models_head_summaries,
+              df_pythia_models_1back_summaries, "Pythia"),
+  build_peaks(df_babylm_models_head_summaries,
+              df_babylm_models_1back_summaries, "BabyLM")
+) %>%
+  mutate(metric = factor(metric,
+                         levels = c("First-token", "1-back", "Prefix-matching (PS)")),
+         suite = factor(suite, levels = c("BabyLM", "Pythia", "Gemstones")))
+
+
+df_peak_all_seeded <- df_peak_all %>%
+  mutate(seed_name = "seed_main") %>%
+  bind_rows(df_peak_seeds) %>%
+  mutate(metric = factor(metric,
+                         levels = c("First-token", "1-back", "Prefix-matching (PS)")),
+         suite = factor(suite))
+
+
+df_peak_all_seeded = df_peak_all_seeded %>%
+  mutate(m_seed = paste(model, seed_name))
+
+```
+
+## Analyze
+
+```{r all_suites_position}
+
+df_mod_seeded <- df_peak_all_seeded %>%
+  filter(metric != "First-token")
+
+mod_seeded <- lmer(peak_layer_depth ~ log10(max_layer) + metric +
+                     (1 | suite) + (1 | model),
+                   data = df_mod_seeded)
+summary(mod_seeded)
+
+r.squaredGLMM(mod_seeded)
+
+
+df_peak_all_seeded %>%
+  ggplot(aes(x = peak_layer_depth, y = metric, fill = metric)) +
+  geom_density_ridges(alpha = 0.6, color = NA, scale = 1.1,
+                      rel_min_height = 0.01,
+                      jittered_points = TRUE,
+                      position = position_points_jitter(width = 0, height = 0),
+                      point_shape = 21, point_size = 2,
+                      point_alpha = 1, aes(point_fill = suite),
+                      point_color = "grey20") +
+  geom_vline(xintercept = 0.5, linetype = "dashed", color = "grey40") +
+  scale_fill_manual(values = my_colors) +
+  scale_discrete_manual("point_fill", values = c("white", "grey60", "black")) +
+  xlim(0, 1) +
+  labs(x = "Relative layer depth of peak", y = NULL, point_fill = "Suite") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom") +
+  guides(fill = "none")
+
+
+```
+
+## Plotting by layer
+
+```{r all_suites_by_layer}
+make_long <- function(head_df, oneback_df, suite_name, seeded = FALSE) {
+  if (seeded) {
+    ps <- head_df %>% transmute(suite = suite_name, model, seed_name, n_params,
+                                layer, head, metric = "Prefix-matching (PS)", value = mean_ps)
+    ob <- oneback_df %>% transmute(suite = suite_name, model, seed_name, n_params,
+                                   layer, head, metric = "1-back", value = mean_1back)
+  } else {
+    ps <- head_df %>% transmute(suite = suite_name, model, seed_name = "seed_main", n_params,
+                                layer, head, metric = "Prefix-matching (PS)", value = mean_ps)
+    ob <- oneback_df %>% transmute(suite = suite_name, model, seed_name = "seed_main", n_params,
+                                   layer, head, metric = "1-back", value = mean_1back)
+  }
+  bind_rows(ps, ob)
+}
+
+df_long_all <- bind_rows(
+  make_long(df_gemstones_models_head_summaries, df_gemstones_models_1back_summaries, "Gemstones"),
+  make_long(df_pythia_models_head_summaries,    df_pythia_models_1back_summaries,    "Pythia"),
+  make_long(df_babylm_models_head_summaries,    df_babylm_models_1back_summaries,    "BabyLM"),
+  make_long(df_pythia_seed_head_summaries,      df_pythia_seed_1back_summaries,      "Pythia", seeded = TRUE)
+) %>%
+  group_by(suite, model, seed_name, metric) %>%
+  mutate(max_layer = max(layer), prop_layer = layer / max_layer) %>%
+  ungroup()
+
+df_long_all %>%
+  group_by(suite, model, seed_name, metric, prop_layer) %>%
+  summarise(val = max(value), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(metric, suite, bin_mid) %>%
+  summarise(mean_val = mean(val), se = sd(val) / sqrt(n()), .groups = "drop") %>%
+  ggplot(aes(x = bin_mid, y = mean_val, color = metric, fill = metric)) +
+  geom_ribbon(aes(ymin = mean_val - se, ymax = mean_val + se), alpha = 0.3, color = NA) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = my_colors) +
+  scale_fill_manual(values = my_colors) +
+  facet_wrap(~metric + suite, scales = "free_y") +
+  labs(x = "Layer depth", y = "Mean of per-network max", color = NULL, fill = NULL) +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "none")
+
+
+df_long_all %>%
+  group_by(suite, model, seed_name, metric, prop_layer) %>%
+  summarise(val = mean(value), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(metric, suite, bin_mid) %>%
+  summarise(mean_val = mean(val), se = sd(val) / sqrt(n()), .groups = "drop") %>%
+  ggplot(aes(x = bin_mid, y = mean_val, color = metric, fill = metric)) +
+  geom_ribbon(aes(ymin = mean_val - se, ymax = mean_val + se), alpha = 0.3, color = NA) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = my_colors) +
+  scale_fill_manual(values = my_colors) +
+  facet_wrap(~metric + suite, scales = "free_y") +
+  labs(x = "Layer depth", y = "Mean attention across heads", color = NULL, fill = NULL) +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "none")
+
+
+
+df_long_all %>%
+  group_by(suite, model, seed_name, metric, prop_layer) %>%
+  summarise(val = max(value), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(metric, bin_mid) %>%
+  summarise(mean_val = mean(val), se = sd(val) / sqrt(n()), .groups = "drop") %>%
+  ggplot(aes(x = bin_mid, y = mean_val, color = metric, fill = metric)) +
+  geom_ribbon(aes(ymin = mean_val - se, ymax = mean_val + se), alpha = 0.3, color = NA) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = my_colors) +
+  scale_fill_manual(values = my_colors) +
+  facet_wrap(~metric, scales = "free_y") +
+  labs(x = "Layer depth", y = "Mean of per-network max", color = NULL, fill = NULL) +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "none")
+
+
+df_long_all %>%
+  group_by(suite, model, seed_name, metric, prop_layer) %>%
+  summarise(val = mean(value), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(metric, bin_mid) %>%
+  summarise(mean_val = mean(val), se = sd(val) / sqrt(n()), .groups = "drop") %>%
+  ggplot(aes(x = bin_mid, y = mean_val, color = metric, fill = metric)) +
+  geom_ribbon(aes(ymin = mean_val - se, ymax = mean_val + se), alpha = 0.3, color = NA) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = my_colors) +
+  scale_fill_manual(values = my_colors) +
+  facet_wrap(~metric, scales = "free_y") +
+  labs(x = "Layer depth", y = "Mean attention across heads", color = NULL, fill = NULL) +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "none")
+
+df_long_all %>%
+  group_by(suite, model, seed_name, metric, prop_layer) %>%
+  summarise(val = max(value), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(metric, suite, bin_mid) %>%
+  summarise(mean_val = mean(val), se = sd(val) / sqrt(n()), .groups = "drop") %>%
+  ggplot(aes(x = bin_mid, y = mean_val, color = metric, fill = metric)) +
+  geom_ribbon(aes(ymin = mean_val - se, ymax = mean_val + se), alpha = 0.2, color = NA) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = my_colors) +
+  scale_fill_manual(values = my_colors) +
+  labs(x = "Layer depth", y = "Mean of per-network max", color = NULL, fill = NULL) +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom") +
+  facet_wrap(~suite)
+
+df_long_all %>%
+  group_by(suite, model, seed_name, metric, prop_layer) %>%
+  summarise(val = mean(value), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(metric, bin_mid, suite) %>%
+  summarise(mean_val = mean(val), se = sd(val) / sqrt(n()), .groups = "drop") %>%
+  ggplot(aes(x = bin_mid, y = mean_val, color = metric, fill = metric)) +
+  geom_ribbon(aes(ymin = mean_val - se, ymax = mean_val + se), alpha = 0.2, color = NA) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = my_colors) +
+  scale_fill_manual(values = my_colors) +
+  labs(x = "Layer depth", y = "Mean attention across heads", color = NULL, fill = NULL) +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom") +
+  facet_wrap(~suite)
+
+
+
+
+```
+
+## Key analyses
+
+Here, we do the most principled analysis, in which we ask whether across the entire dataset.
+
+```{r large_model}
+
+### Just to confirm, using raw values
+mod_full_mean = lmer(data = df_long_all,
+                     value ~ metric * prop_layer + log10(max_layer) * prop_layer + 
+                       metric * log10(max_layer) +
+                       (1|suite) + (1|model))
+summary(mod_full_mean)
+
+r.squaredGLMM(mod_full_mean)
+
+
+### Coefficient plot
+coef_df <- tidy(mod_full_mean, effects = "fixed", conf.int = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(term = recode(term,
+    "metricPrefix-matching (PS)"                             = "PS (vs 1-back)",
+    "prop_layer"                                             = "Relative depth",
+    "log10(max_layer)"                                       = "log10(layer count)",
+    "metricPrefix-matching (PS):prop_layer"                  = "PS × Relative depth",
+    "metricPrefix-matching (PS):log10(max_layer)"            = "PS × log10(layers)",
+    "prop_layer:log10(max_layer)"                            = "Relative depth × log10(layers)"
+  )) %>%
+  mutate(term = fct_reorder(term, estimate))
+
+coef_df %>%
+  ggplot(aes(x = estimate, y = term, color = p.value < 0.01)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high), size = 0.7) +
+  scale_color_manual(values = c("FALSE" = my_colors[1], "TRUE" = my_colors[3]),
+                     guide = "none") +
+  labs(x = "Coefficient estimate (95% CI)", y = NULL) +
+  theme_minimal(base_size = 14)
+
+
+### Table
+
+
+tbl_df <- tidy(mod_full_mean, effects = "fixed", conf.int = TRUE) %>%
+  mutate(
+    term = recode(term,
+      "(Intercept)"                                            = "Intercept",
+      "metricPrefix-matching (PS)"                             = "PS (vs 1-back)",
+      "prop_layer"                                             = "Relative depth",
+      "log10(max_layer)"                                       = "$\\log_{10}$(layer count)",
+      "metricPrefix-matching (PS):prop_layer"                  = "PS $\\times$ Rel.\\ depth",
+      "metricPrefix-matching (PS):log10(max_layer)"            = "PS $\\times \\log_{10}$(layers)",
+      "prop_layer:log10(max_layer)"                            = "Rel.\\ depth $\\times \\log_{10}$(layers)"
+    ),
+    Estimate = sprintf("%.3f", estimate),
+    SE       = sprintf("%.3f", std.error),
+    `95\\% CI` = sprintf("[%.3f, %.3f]", conf.low, conf.high),
+    p = case_when(
+      p.value < 0.001 ~ "$< 0.001$",
+      TRUE            ~ sprintf("%.3f", p.value)
+    )
+  ) %>%
+  select(Term = term, Estimate, SE, `95\\% CI`, p)
+
+kbl(tbl_df, format = "latex", booktabs = TRUE, escape = FALSE,
+    align = "lrrrr",
+    caption = "Fixed effects from the mixed-effects model predicting head-level attention from metric (1-back vs.\\ PS), relative layer depth, and $\\log_{10}$(layer count), with random intercepts for suite, model, and head-within-model.",
+    label = "tab:mod_full_mean") %>%
+  kable_styling(latex_options = c("booktabs", "scale_down")) %>%
+  row_spec(0, bold = TRUE)
+```
+
+

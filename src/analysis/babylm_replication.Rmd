@@ -1,0 +1,522 @@
+---
+title: "Replication in BabyLM Baseline models"
+author: "Sean Trott"
+date: "August 15, 2025"
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dpi = 300, fig.format = "png")
+```
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(lme4)
+library(viridis)
+library(ggridges)
+library(lmerTest)
+library(ggrepel)
+library(ggcorrplot)
+library(vroom)
+library(ggeffects)
+
+all_colors <- viridis::viridis(10, option = "mako")
+my_colors <- all_colors[c(3, 5, 7)]  # Selecting specific colors from the palette
+```
+
+# Induction analysis
+
+## Load BabyLM data
+
+
+```{r include=FALSE}
+## setwd("/Users/seantrott/Dropbox/UCSD/Research/NLMs/epistemology/mechinterp_generalizability/src/analysis")
+directory_path <- "../../data/processed/induction_results_babylm/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+df_models <- bind_rows(csv_list) %>%
+  mutate(model = sub("BabyLM-community/", "", mpath))  %>%
+  mutate(layer = layer + 1)
+nrow(df_models)
+
+
+### Create head-level summaries
+df_babylm_models_head_summaries = df_models %>%
+  group_by(mpath, n_params, model,
+           layer, head, words_seen) %>%
+  summarise(mean_ps = mean(ps),
+            mean_ar_acc = mean(ar_acc),
+            mean_ar_rank = mean(ar_mean_rank))
+
+
+```
+
+
+## Positional analysis
+
+```{r babylm_pos_induction}
+
+### Max by layer
+df_babylm_models_head_summaries %>%
+  group_by(model) %>%
+  mutate(total_words_seen = max(words_seen)) %>%
+  filter(words_seen == total_words_seen) %>%
+  group_by(model, head, layer, n_params) %>%
+  summarise(max_mean = max(mean_ps)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max Prefix-Matching Score") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max Prefix-Matching Score") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params))
+
+
+
+### Max by layer
+df_by_head_seed = df_babylm_models_head_summaries %>%
+  group_by(model) %>%
+  mutate(total_words_seen = max(words_seen)) %>%
+  filter(words_seen == total_words_seen) %>%
+  group_by(model) %>%
+  mutate(z_ps = scale(mean_ps)) 
+
+df_by_head_seed %>%
+  group_by(model, head, layer, n_params) %>%
+  summarise(max_mean = max(z_ps)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max Prefix-Matching Score (z-scored)") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max Prefix-Matching Score (z-scored)") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~model)
+
+
+```
+
+
+## Developmental analysis
+
+
+## Track AR Score
+
+```{r ar_over_time_babylm}
+
+df_ar_by_step = df_babylm_models_head_summaries %>%
+  group_by(model, n_params, words_seen) %>%
+  summarise(mean_ar_acc = first(mean_ar_acc),
+            mean_ar_rank = first(mean_ar_rank))
+
+
+
+df_ar_by_step %>%
+  ggplot(aes(x = words_seen,
+             y = mean_ar_acc,
+             color = model)) +
+  geom_line(size = .6) +
+  geom_point() +
+  theme_minimal() +
+  labs(x = "Words Seen",
+       y = "Associative Recall (Accuracy)",
+       color = "") +
+  scale_x_log10() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(2, option = "mako", 
+                                                   begin = 0.8, end = 0.15))
+
+
+
+
+df_ar_by_step %>%
+  ggplot(aes(x = words_seen,
+             y = mean_ar_rank,
+             color = model)) +
+  geom_line(size = .6) +
+  geom_point() +
+  theme_minimal() +
+  labs(x = "Words Seen",
+       y = "Associative Recall (Rank)",
+       color = "") +
+  scale_x_log10() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(2, option = "mako", 
+                                                   begin = 0.8, end = 0.15))
+
+```
+
+
+
+## Track Max Prefix Score
+
+```{r ps_over_time_babylm}
+### Track max PS at each time point for each model (no seeds)
+df_by_head_max_attention = df_babylm_models_head_summaries %>%
+  group_by(model, n_params, words_seen) %>%
+  slice_max(mean_ps)
+
+df_by_head_max_attention %>%
+  ggplot(aes(x = words_seen, y = mean_ps, color = model)) +
+  geom_point() +
+  geom_line(size = 1) +
+  theme_minimal() +
+  labs(x = "Words Seen", y = "Max Prefix-Matching Score", color = "") +
+  scale_x_log10() +
+  theme(text = element_text(size = 15), legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(2, option = "mako", 
+                                                   begin = 0.8, end = 0.15))
+
+summary(lm(data = df_by_head_max_attention,
+           mean_ps ~ log10(words_seen)))
+```
+
+## PS and AR together
+
+
+```{r ps_and_ar_babylm}
+
+### Track max PS at each time point for each model (no seeds)
+df_by_head_max_attention = df_babylm_models_head_summaries %>%
+  group_by(model, n_params, words_seen) %>%
+  slice_max(mean_ps) %>%
+  ungroup() %>%
+  select(model, n_params, words_seen, mean_ps, mean_ar_acc, mean_ar_rank) %>%
+  distinct()
+
+### Reshape to long for plotting both metrics
+df_combined = df_by_head_max_attention %>%
+  select(model, n_params, words_seen, 
+         `Max Prefix-Matching Score` = mean_ps,
+         `Associative Recall (Accuracy)` = mean_ar_acc) %>%
+  pivot_longer(cols = c(`Max Prefix-Matching Score`, 
+                        `Associative Recall (Accuracy)`),
+               names_to = "metric",
+               values_to = "value")
+
+df_combined %>%
+  ggplot(aes(x = words_seen,
+             y = value,
+             color = metric,
+             linetype = metric)) +
+  geom_point(size = 2) +
+  geom_line(size = 1) +
+  theme_minimal() +
+  labs(x = "Words Seen",
+       y = "Score",
+       color = "",
+       linetype = "") +
+  scale_x_log10() +
+  scale_color_manual(values = c("Max Prefix-Matching Score" = "#0072B2",
+                                "Associative Recall (Accuracy)" = "#009E73")) +
+  scale_linetype_manual(values = c("Max Prefix-Matching Score" = "solid",
+                                   "Associative Recall (Accuracy)" = "dotted")) +
+  facet_wrap(~reorder(model, words_seen)) +
+theme(text = element_text(size = 15),
+        legend.position = "bottom",
+        panel.spacing.x = unit(2, "lines")) 
+```
+
+
+
+# 1-back analysis
+
+## Load BabyLM data
+
+
+```{r include=FALSE}
+## setwd("/Users/seantrott/Dropbox/UCSD/Research/NLMs/epistemology/mechinterp_generalizability/src/analysis")
+directory_path <- "../../data/processed/attentions_babylm/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+df_babylm_models_1back <- bind_rows(csv_list) %>%
+  mutate(model = sub("BabyLM-community/", "", mpath)) %>%
+  filter(Layer > 0)
+nrow(df_babylm_models_1back)
+
+
+
+### Create head-level summaries
+df_babylm_models_1back_summaries = df_babylm_models_1back %>%
+  mutate(head = Head - 1,
+         layer = Layer) %>%
+  group_by(n_params, words_seen, model,
+           layer, head) %>%
+  summarise(mean_1back = mean(`1-back attention`),
+            mean_first = mean(first_token)) 
+
+```
+
+## Positional
+
+### 1-back
+
+```{r 1back_babylm_pos}
+
+### Max by layer
+df_babylm_models_1back_summaries %>%
+  group_by(model) %>%
+  mutate(total_words_seen = max(words_seen)) %>%
+  filter(words_seen == total_words_seen) %>%
+  group_by(model, head, layer, n_params) %>%
+  summarise(max_mean = max(mean_1back)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max 1-back Attention") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max 1-back Attention") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params))
+
+
+
+```
+
+### First token
+
+```{r first_token_babylm_pos}
+
+### Max by layer
+df_babylm_models_1back_summaries %>%
+  group_by(model) %>%
+  mutate(total_words_seen = max(words_seen)) %>%
+  filter(words_seen == total_words_seen) %>%
+  group_by(model, head, layer, n_params) %>%
+  summarise(max_mean = max(mean_first)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max First Token Attention") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max First Token Attention") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params))
+
+
+```
+
+
+
+## Developmental
+
+### 1-back
+
+```{r 1back_all_dev_babylm}
+
+df_by_head_max_attention = df_babylm_models_1back_summaries %>%
+  group_by(model, n_params, words_seen) %>%
+  slice_max(mean_1back)
+
+
+df_by_head_max_attention %>%
+  ggplot(aes(x = words_seen,
+             y = mean_1back,
+             color = model)) +
+  geom_line(size = 1) +   
+  geom_point() +
+  theme_minimal() +
+  labs(x = "Words Seen",
+       y = "Max 1-back Attention",
+       color = "") +
+  scale_x_log10() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(2, option = "mako", 
+                                                   begin = 0.85, end = 0.1)) 
+
+summary(lm(data = df_by_head_max_attention,
+           mean_1back ~ log10(words_seen)))
+
+```
+
+### First token
+
+```{r first_token_all_dev_babylm}
+
+df_by_head_max_attention = df_babylm_models_1back_summaries %>%
+  group_by(model, n_params, words_seen) %>%
+  slice_max(mean_first)
+
+
+df_by_head_max_attention %>%
+  ggplot(aes(x = words_seen,
+             y = mean_first,
+             color = model)) +
+  geom_line(size = 1) + 
+  geom_point() +
+  theme_minimal() +
+  labs(x = "Words Seen",
+       y = "Max First Token Attention",
+       color = "") +
+  scale_x_log10() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(2, option = "mako", 
+                                                   begin = 0.85, end = 0.1)) 
+
+summary(lm(data = df_by_head_max_attention,
+           mean_first ~ log10(words_seen)))
+
+```
+
+
+
+
+# Compare 1-back and induction by model
+
+```{r temporal_coordination_babylm}
+df_by_head_max_attention_1back = df_babylm_models_1back_summaries%>%
+  group_by(model, n_params, words_seen) %>%
+  slice_max(mean_1back)
+
+df_by_head_max_attention_induction = df_babylm_models_head_summaries %>%
+  group_by(model, n_params, words_seen) %>%
+  slice_max(mean_ps)
+
+induction_traj <- df_by_head_max_attention_induction %>%
+  group_by(model, n_params, words_seen) %>%
+  summarise(max_val = max(mean_ps), .groups = "drop") %>%
+  mutate(metric = "Induction (PS)")
+
+oneback_traj <- df_by_head_max_attention_1back %>%
+  group_by(model, n_params, words_seen) %>%
+  summarise(max_val = max(mean_1back), .groups = "drop") %>%
+  mutate(metric = "1-back Attention")
+
+combined <- bind_rows(induction_traj, oneback_traj)
+
+combined %>%
+  ggplot(aes(x = words_seen, y = max_val, color = metric)) +
+  geom_line(linewidth = 1.5) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(x = "Words Seen",
+       y = "Max attention score",
+       color = "") +
+  scale_x_log10() +
+  scale_color_manual(values = c("1-back Attention" = "#E69F00", 
+                                "Induction (PS)" = "#0072B2")) +
+
+  facet_wrap(~reorder(model, words_seen)) +
+theme(text = element_text(size = 15),
+        legend.position = "bottom",
+        panel.spacing.x = unit(2, "lines")) 
+
+
+
+
+
+```
+
+
+### All together
+
+```{r babylm_ar_with_attention}
+df_by_head_max_attention_1back = df_babylm_models_1back_summaries %>%
+  group_by(model, n_params, words_seen) %>%
+  slice_max(mean_1back)
+
+df_by_head_max_attention_induction = df_babylm_models_head_summaries %>%
+  group_by(model, n_params, words_seen) %>%
+  slice_max(mean_ps)
+
+df_ar_traj = df_babylm_models_head_summaries %>%
+  group_by(model, n_params, words_seen) %>%
+  summarise(mean_ar_acc = first(mean_ar_acc), .groups = "drop")
+
+induction_traj <- df_by_head_max_attention_induction %>%
+  group_by(model, n_params, words_seen) %>%
+  summarise(max_val = max(mean_ps), .groups = "drop") %>%
+  mutate(metric = "Induction (PS)")
+
+oneback_traj <- df_by_head_max_attention_1back %>%
+  group_by(model, n_params, words_seen) %>%
+  summarise(max_val = max(mean_1back), .groups = "drop") %>%
+  mutate(metric = "1-back Attention")
+
+ar_traj <- df_ar_traj %>%
+  rename(max_val = mean_ar_acc) %>%
+  mutate(metric = "Associative Recall (Acc)")
+
+combined <- bind_rows(induction_traj, oneback_traj, ar_traj)
+
+combined %>%
+  ggplot(aes(x = words_seen, y = max_val, 
+             color = metric, linetype = metric)) +
+  geom_line(linewidth = 1.5) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(x = "Words Seen",
+       y = "Score",
+       color = "",
+       linetype = "") +
+  scale_x_log10() +
+  scale_color_manual(values = c("1-back Attention" = "#E69F00", 
+                                "Induction (PS)" = "#0072B2",
+                                "Associative Recall (Acc)" = "#009E73")) +
+  scale_linetype_manual(values = c("1-back Attention" = "solid",
+                                   "Induction (PS)" = "solid",
+                                   "Associative Recall (Acc)" = "dotted")) +
+  facet_wrap(~reorder(model, words_seen)) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom",
+        panel.spacing.x = unit(2, "lines"))
+```
+

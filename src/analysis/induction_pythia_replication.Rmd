@@ -1,0 +1,917 @@
+---
+title: "Emergence of Head Types Across Pythia Suite"
+author: "Sean Trott"
+date: "August 15, 2025"
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dpi = 300, fig.format = "pdf")
+```
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(lme4)
+library(viridis)
+library(ggridges)
+library(lmerTest)
+library(ggrepel)
+library(ggcorrplot)
+library(vroom)
+library(ggeffects)
+
+all_colors <- viridis::viridis(10, option = "mako")
+my_colors <- all_colors[c(3, 5, 7)]  # Selecting specific colors from the palette
+```
+
+# Load Pythia data
+
+
+
+```{r include=FALSE}
+## setwd("/Users/seantrott/Dropbox/UCSD/Research/NLMs/epistemology/mechinterp_generalizability/src/analysis")
+directory_path <- "../../data/processed/induction_results_main/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+df_pythia_models <- bind_rows(csv_list) %>%
+  mutate(model = sub("^EleutherAI/", "", mpath))  %>%
+  mutate(step_modded = step + 1) %>%
+  mutate(layer = layer + 1)
+nrow(df_pythia_models)
+
+
+table(df_pythia_models$mpath)
+
+
+
+### Create head-level summaries
+df_pythia_models_head_summaries = df_pythia_models %>%
+  group_by(mpath, n_params, step, step_modded, model,
+           layer, head) %>%
+  summarise(mean_ps = mean(ps),
+            mean_ar_acc = mean(ar_acc),
+            mean_ar_rank = mean(ar_mean_rank))
+
+
+```
+
+
+
+
+
+
+# Final-step attention
+
+
+## Induction heads: a summary
+
+```{r induction_head_pos_main}
+
+
+
+df_by_head_seed = df_pythia_models_head_summaries %>%
+  filter(step_modded == 143001) %>%
+  group_by(mpath) %>%
+  mutate(z_ps = scale(mean_ps)) 
+
+
+### Max by layer
+df_by_head_seed %>%
+  group_by(mpath, head, layer, n_params) %>%
+  summarise(max_mean = max(mean_ps)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max Prefix-Matching Score") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max Prefix-Matching Score") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(mpath, n_params), nrow = 2)
+
+
+### Max by layer
+df_by_head_seed %>%
+  group_by(mpath, head, layer, n_params) %>%
+  summarise(max_mean = max(z_ps)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max Prefix-Matching Score (z-scored)") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max Prefix-Matching Score (z-scored)") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(mpath, n_params), nrow =2)
+
+
+
+### How does *max* attention per layer change across model size?
+df_layerwise_attn <- df_by_head_seed %>%
+  group_by(mpath, layer, n_params) %>%
+  summarise(
+    max_attention = max(z_ps),
+    se_attention = sd(z_ps) / sqrt(n()),
+    .groups = "drop"
+  )
+
+### 
+summary(lm(data = df_layerwise_attn,
+             max_attention ~ log10(n_params) * layer))
+
+
+
+### Relative layer
+df_pythia_models_final_step = df_pythia_models_head_summaries %>%
+  filter(step_modded == 143001) %>%
+  group_by(model) %>%
+  mutate(max_layer = max(layer),
+         prop_layer = layer / max_layer) %>%
+  ### Scale for interpreting the coefficients more easily
+  mutate(prop_layer_scaled = scale(prop_layer)) %>%
+  ungroup()
+
+
+### Visualizing relative layer
+summary_df <- df_pythia_models_final_step %>%
+  mutate(binned_prop_layer = ntile(prop_layer, 6)) %>%
+  mutate(prop_binned = binned_prop_layer / 6) %>%
+  group_by(model, n_params, prop_binned) %>%
+  summarise(
+    max_ratio_per_seed = max(mean_ps, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(model, prop_binned, n_params) %>%
+  summarise(
+    avg_max_ratio = mean(max_ratio_per_seed, na.rm = TRUE),
+    se_max_ratio = sd(max_ratio_per_seed, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  )
+
+ggplot(summary_df, aes(x = prop_binned, y = avg_max_ratio, 
+                       color = reorder(model, n_params))) +
+  geom_line(size = 1.2) +
+  labs(x = "Layer Depth",
+       y = "Max Prefix-Matching Score",
+       color = "", fill = "") +
+  scale_color_manual(values = viridisLite::viridis(8, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_fill_manual(values = viridisLite::viridis(8, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") 
+
+
+
+### Analyses
+summary(lmer(mean_ps ~ prop_layer + (1|head) + (1|model), 
+             data = df_pythia_models_final_step))
+
+```
+
+## Peak layer depth
+
+
+```{r pythia_main_peak_layer}
+### Relative vs. absolute position
+
+# Identify the layer with peak PS for each model
+df_peak_layer = df_pythia_models_head_summaries %>%
+  group_by(model, mpath, n_params) %>%
+  mutate(max_layer = max(layer)) %>%
+  slice_max(mean_ps, n = 1, with_ties = FALSE) %>%
+  mutate(peak_layer_depth = layer / max_layer) %>%
+  select(model, mpath, n_params, max_layer, peak_layer = layer, 
+         peak_layer_depth) %>%
+  ungroup()
+
+
+### Relative layer depth
+df_peak_layer %>%
+  ggplot(aes(x = peak_layer_depth)) +
+  geom_density(fill = my_colors[2], alpha = 0.6, color = NA) +
+  geom_vline(xintercept = median(df_peak_layer$peak_layer_depth),
+             linetype = "dashed") +
+  geom_rug(length = unit(0.05, "npc")) +
+  labs(x = "Relative layer depth of peak prefix-matching score",
+       y = "Density") +
+  xlim(0, 1) +
+  theme_minimal(base_size = 15)
+
+# How does the number of possible layers relate to 
+# *peak relative layer* and *peak layer*?
+m_relative = lm(peak_layer_depth ~ log10(max_layer), data = df_peak_layer)
+m_absolute = lm(peak_layer ~ log10(max_layer), data = df_peak_layer)
+summary(m_relative)  
+summary(m_absolute) 
+
+
+
+df_peak_layer %>%
+  ggplot(aes(x = max_layer,
+             y = peak_layer_depth)) +
+  geom_point() +
+  scale_x_log10() +
+  labs(x = "Number of Layers (Log10)",
+       y = "Layer Depth of Peak PS") +
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "none") 
+
+
+```
+
+
+
+# Attention over time
+
+## Track AR Score
+
+```{r ar_over_time_ar}
+
+df_ar_by_step = df_pythia_models_head_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(mean_ar_acc = first(mean_ar_acc),
+            mean_ar_rank = first(mean_ar_rank))
+
+
+df_ar_by_step %>%
+  ggplot(aes(x = step_modded,
+             y = mean_ar_acc)) +
+  geom_line(size = .6) +
+  theme_minimal() +
+  labs(x = "Training Step",
+       y = "Associative Recall (Accuracy)",
+       color = "") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000,
+             linetype = "dotted",
+             size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(9, option = "mako",
+                                                   begin = 0.8, end = 0.15)) +
+  facet_wrap(~reorder(model, n_params), nrow =2)
+
+
+
+```
+
+
+
+## Track Max Prefix Score
+
+```{r ps_over_time_ps}
+### Track max PS at each time point for each model (no seeds)
+### Track max PS at each time point for each model (no seeds)
+df_by_head_max_attention = df_pythia_models_head_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  slice_max(mean_ps)
+
+# Grand average across all models at each step
+grand_avg <- df_by_head_max_attention %>%
+  group_by(step_modded) %>%
+  summarise(grand_mean = mean(mean_ps))
+
+df_by_head_max_attention %>%
+  ggplot(aes(x = step_modded,
+             y = mean_ps)) +
+  geom_line(size = 1) +                     # per-model trajectory
+  geom_line(data = grand_avg, aes(x = step_modded, y = grand_mean),
+            color = "red", # linetype = "dotted", 
+            size = 1.2, inherit.aes = FALSE) +  # grand mean
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "Max Prefix-Matching Score",
+       color = "") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "none") +
+  scale_color_manual(values = viridisLite::viridis(9, option = "mako", 
+                                                   begin = 0.85, end = 0.1)) + 
+  facet_wrap(~reorder(model, n_params), nrow =2)
+
+summary(lm(data = df_by_head_max_attention,
+           mean_ps ~ log10(step_modded) + log10(n_params)))
+```
+
+## PS and AR together
+
+
+```{r ps_and_ar}
+## PS and AR together
+
+### Track max PS at each time point for each model (no seeds)
+df_by_head_max_attention = df_pythia_models_head_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  slice_max(mean_ps) %>%
+  ungroup() %>%
+  select(model, n_params, step_modded, mean_ps, mean_ar_acc) %>%
+  distinct()
+
+### Reshape to long for plotting both metrics
+df_combined = df_by_head_max_attention %>%
+  select(model, n_params, step_modded, 
+         `Max Prefix-Matching Score` = mean_ps,
+         `Associative Recall (Accuracy)` = mean_ar_acc) %>%
+  pivot_longer(cols = c(`Max Prefix-Matching Score`, 
+                        `Associative Recall (Accuracy)`),
+               names_to = "metric",
+               values_to = "value")
+
+df_combined %>%
+  ggplot(aes(x = step_modded,
+             y = value,
+             color = metric,
+             linetype = metric)) +
+  geom_line(size = 1) +
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "Score",
+       color = "",
+       linetype = "") +
+  scale_x_log10() +
+    geom_point(size = 2) +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = c("Max Prefix-Matching Score" = "#440154",
+                                "Associative Recall (Accuracy)" = "#21918c")) +
+  facet_wrap(~reorder(model, n_params), nrow = 2)
+
+```
+
+
+# 1-back and first-token replication
+
+## Load data
+
+
+
+```{r include=FALSE}
+## setwd("/Users/seantrott/Dropbox/UCSD/Research/NLMs/epistemology/mechinterp_generalizability/src/analysis")
+directory_path <- "../../data/processed/attention_main_summaries/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+
+df_pythia_models_1back_summaries <- bind_rows(csv_list) %>%
+  mutate(model = sub("^EleutherAI/", "", mpath)) %>%
+  filter(Layer > 0) %>%
+  mutate(head = Head - 1,
+         layer = Layer)  %>%
+  select(mpath, model, n_params, layer, head, step_modded, mean_1back, mean_first)
+  
+nrow(df_pythia_models_1back_summaries)
+
+
+```
+
+## Positional
+
+### 1-back
+
+```{r 1_back_all_pos_pythia}
+
+df_by_head_seed = df_pythia_models_1back_summaries %>%
+  filter(step_modded == 143001) %>%
+  group_by(mpath, model) %>%
+  mutate(z_1back = scale(mean_1back)) 
+
+
+### Max by layer
+df_by_head_seed %>%
+  group_by(model, head, layer, n_params) %>%
+  summarise(max_mean = max(mean_1back)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max 1-back Score") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max 1-back Score") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params), nrow=2)
+
+
+
+
+### Max by layer
+df_by_head_seed %>%
+  group_by(model, head, layer, n_params) %>%
+  summarise(max_mean = max(z_1back)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max 1-back Score (z-scored)") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max 1-back Score (z-scored)") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params), nrow=2)
+
+### Relative layer
+df_pythia_models_final_step = df_pythia_models_1back_summaries %>%
+  filter(step_modded == 143001) %>%
+  group_by(model) %>%
+  mutate(max_layer = max(layer),
+         prop_layer = layer / max_layer) %>%
+  ### Scale for interpreting the coefficients more easily
+  mutate(prop_layer_scaled = scale(prop_layer)) %>%
+  ungroup()
+
+
+### Visualizing relative layer
+summary_df <- df_pythia_models_final_step %>%
+  mutate(binned_prop_layer = ntile(prop_layer, 6)) %>%
+  mutate(prop_binned = binned_prop_layer / 6) %>%
+  group_by(model, n_params, prop_binned) %>%
+  summarise(
+    max_ratio_per_seed = max(mean_1back, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(model, prop_binned, n_params) %>%
+  summarise(
+    avg_max_ratio = mean(max_ratio_per_seed, na.rm = TRUE),
+    se_max_ratio = sd(max_ratio_per_seed, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  )
+
+ggplot(summary_df, aes(x = prop_binned, y = avg_max_ratio, 
+                       color = reorder(model, n_params))) +
+  geom_line(size = 1.2) +
+  labs(x = "Layer Depth",
+       y = "Max 1-back Score",
+       color = "", fill = "") +
+  scale_color_manual(values = viridisLite::viridis(8, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_fill_manual(values = viridisLite::viridis(8, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") 
+
+
+
+
+### Analyses
+summary(lmer(mean_1back ~ prop_layer + (1|head) + (1|model), 
+             data = df_pythia_models_final_step))
+
+```
+
+
+### First token
+
+```{r first_token_all_pos_pythia}
+
+df_by_head_seed = df_pythia_models_1back_summaries %>%
+  filter(step_modded == 143001) %>%
+  group_by(model) %>%
+  mutate(z_first = scale(mean_first)) 
+
+
+### Max by layer
+df_by_head_seed %>%
+  group_by(model, head, layer, n_params) %>%
+  summarise(max_mean = max(mean_first)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max First Token Score") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max First Token Score") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params), nrow=2)
+
+
+### Max by layer
+df_by_head_seed %>%
+  group_by(model, head, layer, n_params) %>%
+  summarise(max_mean = max(z_first)) %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = max_mean)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Max First Token Score (z-scored)") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max First Token Score (z-scored)") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params), nrow=2)
+
+
+### Relative layer
+df_pythia_models_final_step = df_pythia_models_1back_summaries %>%
+  filter(step_modded == 143001) %>%
+  group_by(model) %>%
+  mutate(max_layer = max(layer),
+         prop_layer = layer / max_layer) %>%
+  ### Scale for interpreting the coefficients more easily
+  mutate(prop_layer_scaled = scale(prop_layer)) %>%
+  ungroup()
+
+
+### Visualizing relative layer
+summary_df <- df_pythia_models_final_step %>%
+  mutate(binned_prop_layer = ntile(prop_layer, 6)) %>%
+  mutate(prop_binned = binned_prop_layer / 6) %>%
+  group_by(model, n_params, prop_binned) %>%
+  summarise(
+    max_ratio_per_seed = max(mean_first, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(model, prop_binned, n_params) %>%
+  summarise(
+    avg_max_ratio = mean(max_ratio_per_seed, na.rm = TRUE),
+    se_max_ratio = sd(max_ratio_per_seed, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  )
+
+ggplot(summary_df, aes(x = prop_binned, y = avg_max_ratio, 
+                       color = reorder(model, n_params))) +
+  geom_line(size = 1.2) +
+  labs(x = "Layer Depth",
+       y = "Max First Token Score",
+       color = "", fill = "") +
+  scale_color_manual(values = viridisLite::viridis(8, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_fill_manual(values = viridisLite::viridis(8, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  theme_minimal(base_size = 15) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") 
+
+
+
+
+### Analyses
+summary(lmer(mean_first ~ prop_layer + (1|head) + (1|model), 
+             data = df_pythia_models_final_step))
+
+```
+
+
+## Developmental
+
+### 1-back
+
+```{r 1back_all_dev_pythia}
+
+df_by_head_max_attention = df_pythia_models_1back_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  slice_max(mean_1back)
+
+# Grand average across all models at each step
+grand_avg <- df_by_head_max_attention %>%
+  group_by(step_modded) %>%
+  summarise(grand_mean = mean(mean_1back))
+
+df_by_head_max_attention %>%
+  ggplot(aes(x = step_modded,
+             y = mean_1back)) +
+  geom_line(size = 1) +                     # per-model trajectory
+  geom_line(data = grand_avg, aes(x = step_modded, y = grand_mean),
+            color = "red", # linetype = "dotted", 
+            size = 1.2, inherit.aes = FALSE) +  # grand mean
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "Max 1-back Attention",
+       color = "") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "none") +
+  scale_color_manual(values = viridisLite::viridis(9, option = "mako", 
+                                                   begin = 0.85, end = 0.1)) + 
+  facet_wrap(~reorder(model, n_params),nrow=2)
+
+summary(lm(data = df_by_head_max_attention,
+           mean_1back ~ log10(step_modded) + log10(n_params)))
+
+```
+
+### First token
+
+```{r first_token_all_dev_pythia}
+
+df_by_head_max_attention = df_pythia_models_1back_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  slice_max(mean_first)
+
+# Grand average across all models at each step
+grand_avg <- df_by_head_max_attention %>%
+  group_by(step_modded) %>%
+  summarise(grand_mean = mean(mean_first))
+
+df_by_head_max_attention %>%
+  ggplot(aes(x = step_modded,
+             y = mean_first)) +
+  geom_line(size = 1) +                     # per-model trajectory
+  geom_line(data = grand_avg, aes(x = step_modded, y = grand_mean),
+            color = "red", # linetype = "dotted", 
+            size = 1.2, inherit.aes = FALSE) +  # grand mean
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "Max First Token Attention",
+       color = "") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "none") +
+  scale_color_manual(values = viridisLite::viridis(9, option = "mako", 
+                                                   begin = 0.85, end = 0.1)) + 
+  facet_wrap(~reorder(model, n_params) ,nrow =2)
+
+summary(lm(data = df_by_head_max_attention,
+           mean_first ~ log10(step_modded) + log10(n_params)))
+
+```
+
+
+
+# Compare 1-back and induction by model
+
+```{r temporal_coordination_all}
+### Track max previous token heads at each time point for each seed, across layer/head
+df_by_head_max_attention_1back = df_pythia_models_1back_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  slice_max(mean_1back)
+
+### Track max PS at each time point for each seed, across layer/head
+df_by_head_max_attention_induction = df_pythia_models_head_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  slice_max(mean_ps)
+
+# Prep induction data
+induction_traj <- df_by_head_max_attention_induction %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(max_val = max(mean_ps), .groups = "drop") %>%
+  group_by(model) %>%
+  mutate(max_val_scaled = (max_val - min(max_val)) / (max(max_val) - min(max_val))) %>%
+  ungroup() %>%
+  mutate(metric = "Induction (PS)")
+
+# Prep 1-back data
+oneback_traj <- df_by_head_max_attention_1back %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(max_val = max(mean_1back), .groups = "drop") %>%
+  group_by(model) %>%
+  mutate(max_val_scaled = (max_val - min(max_val)) / (max(max_val) - min(max_val))) %>%
+  ungroup() %>%
+  mutate(metric = "1-back Attention")
+
+# Combine
+combined <- bind_rows(induction_traj, oneback_traj)
+
+# Averages across seeds
+combined_avg <- combined %>%
+  group_by(model, n_params, step_modded, metric) %>%
+  summarise(mean_scaled = mean(max_val_scaled), .groups = "drop")
+
+# Plot
+combined %>%
+  ggplot(aes(x = step_modded, y = max_val_scaled, 
+             color = metric)) +
+  geom_line(alpha = 0.2, linewidth = 0.4) +
+  geom_line(data = combined_avg, 
+            aes(x = step_modded, y = mean_scaled, color = metric, group = metric),
+            linewidth = 1.5) +
+  theme_minimal() +
+  labs(x = "Training Step",
+       y = "Scaled max score (0-1)",
+       color = "") +
+  scale_x_log10() +
+scale_color_manual(values = c("1-back Attention" = "#E69F00", "Induction (PS)" = "#0072B2")) +
+  geom_vline(xintercept = 1000, linetype = "dotted", linewidth = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params), nrow=2)
+
+
+
+### Compare AUC
+auc_comparison <- combined %>%
+  group_by(model, metric) %>%
+  arrange(step_modded) %>%
+  summarise(
+    auc = sum(diff(log10(step_modded)) * (max_val_scaled[-1] + max_val_scaled[-n()]) / 2),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = metric, values_from = auc)
+
+# Paired test
+t.test(auc_comparison$`1-back Attention`, auc_comparison$`Induction (PS)`, paired = TRUE)
+
+
+
+### Without scaling
+df_by_head_max_attention_1back = df_pythia_models_1back_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  slice_max(mean_1back)
+
+### Track max PS at each time point for each model, across layer/head
+df_by_head_max_attention_induction = df_pythia_models_head_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  slice_max(mean_ps)
+
+# Prep induction data — no scaling
+induction_traj <- df_by_head_max_attention_induction %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(max_val = max(mean_ps), .groups = "drop") %>%
+  mutate(metric = "Induction (PS)")
+
+# Prep 1-back data — no scaling
+oneback_traj <- df_by_head_max_attention_1back %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(max_val = max(mean_1back), .groups = "drop") %>%
+  mutate(metric = "1-back Attention")
+
+# Combine
+combined <- bind_rows(induction_traj, oneback_traj)
+
+# Averages across models (for the bold trajectory)
+combined_avg <- combined %>%
+  group_by(model, n_params, step_modded, metric) %>%
+  summarise(mean_val = mean(max_val), .groups = "drop")
+
+# Plot
+combined %>%
+  ggplot(aes(x = step_modded, y = max_val, 
+             color = metric, group = interaction(model, metric))) +
+  geom_line(alpha = 0.2, linewidth = 0.4) +
+  geom_line(data = combined_avg, 
+            aes(x = step_modded, y = mean_val, color = metric, group = metric),
+            linewidth = 1.5) +
+  theme_minimal() +
+  labs(x = "Training Step",
+       y = "Max attention score",
+       color = "") +
+  scale_x_log10() +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("1-back Attention" = "#E69F00", 
+                                "Induction (PS)" = "#0072B2")) +
+  geom_vline(xintercept = 1000, linetype = "dotted", linewidth = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params), nrow = 2)
+
+
+### Compare AUC (unscaled)
+auc_comparison <- combined %>%
+  group_by(model, metric) %>%
+  arrange(step_modded) %>%
+  summarise(
+    auc = sum(diff(log10(step_modded)) * (max_val[-1] + max_val[-n()]) / 2),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = metric, values_from = auc)
+
+# Paired test
+t.test(auc_comparison$`1-back Attention`, auc_comparison$`Induction (PS)`, paired = TRUE)
+
+
+
+
+```
+
+
+### Adding AR
+
+```{r temporal_coordination_with_ar}
+### Without scaling
+df_by_head_max_attention_1back = df_pythia_models_1back_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  slice_max(mean_1back)
+
+df_by_head_max_attention_first = df_pythia_models_1back_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  slice_max(mean_first)
+
+df_by_head_max_attention_induction = df_pythia_models_head_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  slice_max(mean_ps)
+
+
+### Prep data
+induction_traj <- df_by_head_max_attention_induction %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(max_val = max(mean_ps), .groups = "drop") %>%
+  mutate(metric = "Induction (PS)")
+
+oneback_traj <- df_by_head_max_attention_1back %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(max_val = max(mean_1back), .groups = "drop") %>%
+  mutate(metric = "1-back Attention")
+
+
+
+# Prep AR data — no scaling
+df_ar_traj = df_pythia_models_head_summaries %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(mean_ar_acc = first(mean_ar_acc), .groups = "drop")
+ar_traj <- df_ar_traj %>%
+  rename(max_val = mean_ar_acc) %>%
+  mutate(metric = "Associative Recall (Acc)")
+
+# Combine
+combined <- bind_rows(induction_traj, oneback_traj, ar_traj)
+
+# Averages across models
+combined_avg <- combined %>%
+  group_by(model, n_params, step_modded, metric) %>%
+  summarise(mean_val = mean(max_val), .groups = "drop")
+
+# Plot (unscaled)
+combined %>%
+  ggplot(aes(x = step_modded, y = max_val, 
+             color = metric, linetype = metric)) +
+  geom_line(linewidth = 1.8) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(x = "Training Step",
+       y = "Score",
+       color = "",
+       linetype = "") +
+  scale_x_log10() +
+  scale_color_manual(values = c("1-back Attention" = "#E69F00", 
+                                "Induction (PS)" = "#0072B2",
+                                "Associative Recall (Acc)" = "#009E73")) +
+  scale_linetype_manual(values = c("1-back Attention" = "solid",
+                                   "Induction (PS)" = "solid",
+                                   "Associative Recall (Acc)" = "dotted")) +
+  geom_vline(xintercept = 1000, linetype = "dotted", linewidth = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params), nrow = 2)
+```
+
+

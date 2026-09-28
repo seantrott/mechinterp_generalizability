@@ -1,0 +1,349 @@
+---
+title: "Comparison of 1-back and induction heads"
+author: "Sean Trott"
+date: "August 15, 2025"
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dpi = 300, fig.format = "pdf")
+```
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(lme4)
+library(viridis)
+library(ggridges)
+library(lmerTest)
+library(ggrepel)
+library(ggcorrplot)
+library(vroom)
+library(ggeffects)
+library(lmTest)
+library(tidyr)
+library(purrr)
+
+all_colors <- viridis::viridis(10, option = "mako")
+my_colors <- all_colors[c(3, 5, 7)]  # Selecting specific colors from the palette
+```
+
+# Load Pythia data
+
+## Load induction heads
+
+```{r include=FALSE}
+## setwd("/Users/seantrott/Dropbox/UCSD/Research/NLMs/epistemology/mechinterp_generalizability/src/analysis")
+directory_path <- "../../data/processed/induction_results/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+df_pythia_models <- bind_rows(csv_list) %>%
+  mutate(model = sub("^EleutherAI/", "", mpath))  %>%
+  mutate(step_modded = step + 1) %>%
+  mutate(layer = layer + 1)
+nrow(df_pythia_models)
+
+
+table(df_pythia_models$seed)
+table(df_pythia_models$mpath)
+
+
+
+### Create head-level summaries
+df_pythia_models_head_summaries_induction = df_pythia_models %>%
+  group_by(mpath, n_params, step, step_modded, seed, model,
+           layer, head) %>%
+  summarise(mean_ps = mean(ps),
+            mean_ar_acc = mean(ar_acc),
+            mean_ar_rank = mean(ar_mean_rank)) %>%
+  mutate(seed_name = paste0("seed", seed))
+
+
+```
+
+## Load 1-back
+
+```{r include=FALSE}
+## setwd("/Users/seantrott/Dropbox/UCSD/Research/NLMs/epistemology/mechinterp_generalizability/src/analysis")
+directory_path <- "../../data/processed/attention_summaries/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+df_pythia_models_1back <- bind_rows(csv_list) %>%
+  mutate(model = sub("^EleutherAI/", "", mpath)) %>%
+  filter(Layer > 0)
+nrow(df_pythia_models_1back)
+
+
+table(df_pythia_models_1back$seed)
+table(df_pythia_models_1back$mpath)
+max(df_pythia_models_1back$step_modded)
+
+
+
+```
+
+
+
+
+# Analysis
+
+## Positional analysis
+
+
+
+## Compare to 1-back head positions
+
+```{r}
+### Induction heads
+df_by_head_seed_induction = df_pythia_models_head_summaries_induction %>%
+  filter(step_modded == 143001) %>%
+  group_by(mpath) %>%
+  mutate(z_ps = scale(mean_ps))
+
+
+### 1-back heads
+df_by_head_seed_1back = df_pythia_models_1back %>%
+  filter(step_modded == 143001) %>%
+  group_by(mpath) %>%
+  mutate(z_mean_1back = scale(mean_1back))
+
+
+# Get layer of max induction head per seed
+induction_peaks <- df_by_head_seed_induction %>%
+  filter(step == 143000) %>%
+  group_by(model, seed_name) %>%
+  slice_max(mean_ps, n = 1) %>%
+  select(model, seed_name, layer_induction = layer)
+
+# Get layer of max 1-back head per seed
+oneback_peaks <- df_by_head_seed_1back %>%
+  filter(step_modded == 143001) %>%
+  group_by(model, seed_name) %>%
+  slice_max(mean_1back, n = 1) %>%
+  select(model, seed_name, layer_1back = Layer)
+
+# Join and compute offset
+offsets <- induction_peaks %>%
+  inner_join(oneback_peaks, by = c("model", "seed_name")) %>%
+  mutate(offset = layer_induction - layer_1back)
+
+mean(offsets$offset)
+median(offsets$offset)
+sd(offsets$offset)
+
+
+### What is distribution of offsets by model?
+offsets %>%
+  group_by(model) %>%
+  summarise(
+    mean_offset = mean(offset),
+    median_offset = median(offset),
+    sd_offset = sd(offset),
+    n = n()
+  )
+
+```
+
+## Revised positional analysis
+
+```{r position_revised}
+make_long <- function(head_df, oneback_df, suite_name) {
+  ps <- head_df %>% transmute(suite = suite_name, model, seed_name, n_params,
+                              layer, head, metric = "Prefix-matching (PS)", value = mean_ps)
+  ob <- oneback_df %>% transmute(suite = suite_name, model, seed_name, n_params,
+                                 layer, head, metric = "1-back", value = mean_1back)
+  bind_rows(ps, ob)
+}
+
+df_pythia_seed_1back_summaries <- df_pythia_models_1back %>%
+  filter(step_modded == 143001) %>%
+  mutate(head = Head - 1, layer = Layer) %>%
+  filter(Layer > 0) %>%
+  group_by(mpath, model, n_params, seed, seed_name, layer, head) %>%
+  summarise(mean_1back = mean(mean_1back), mean_first = mean(mean_first), .groups = "drop")
+
+
+df_pythia_induction_summaries_final = df_pythia_models_head_summaries_induction %>%
+   filter(step_modded == 143001)
+
+
+df_long_all <- bind_rows(
+  make_long(df_pythia_induction_summaries_final, df_pythia_seed_1back_summaries, "Pythia")) %>%
+  group_by(suite, model, seed_name, metric) %>%
+  mutate(max_layer = max(layer), prop_layer = layer / max_layer) %>%
+  ungroup()
+
+df_long_all %>%
+  group_by(suite, model, seed_name, metric, prop_layer) %>%
+  summarise(val = max(value), .groups = "drop") %>%
+  mutate(bin = cut(prop_layer, breaks = seq(0, 1, 0.1), include.lowest = TRUE),
+         bin_mid = as.numeric(sub("[\\(\\[]([0-9.]+).*", "\\1", bin)) + 0.05) %>%
+  group_by(metric, suite, bin_mid) %>%
+  summarise(mean_val = mean(val), se = sd(val) / sqrt(n()), .groups = "drop") %>%
+  ggplot(aes(x = bin_mid, y = mean_val, color = metric, fill = metric)) +
+  geom_ribbon(aes(ymin = mean_val - se, ymax = mean_val + se), alpha = 0.3, color = NA) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = my_colors) +
+  scale_fill_manual(values = my_colors) +
+  facet_wrap(~metric + suite, scales = "free_y") +
+  labs(x = "Layer depth", y = "Mean of per-network max", color = NULL, fill = NULL) +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "none")
+
+mod_full = lmer(data = df_long_all,
+                     value ~ metric * prop_layer + log10(max_layer) * prop_layer + 
+                       metric * log10(max_layer) +
+                       (1|seed_name) + (1|model))
+summary(mod_full)
+
+
+```
+
+
+## Temporal coordination
+
+```{r temporal_coordination}
+
+df_by_head_max_attention_1back = df_pythia_models_1back %>%
+  group_by(model, n_params, step_modded, seed, seed_name) %>%
+  slice_max(mean_1back)
+
+df_by_head_max_attention_induction = df_pythia_models_head_summaries_induction %>%
+  group_by(model, n_params, step_modded, seed, seed_name) %>%
+  slice_max(mean_ps)
+
+induction_traj <- df_by_head_max_attention_induction %>%
+  group_by(model, n_params, seed_name, step_modded) %>%
+  summarise(max_val = max(mean_ps), .groups = "drop") %>%
+  mutate(metric = "Induction (PS)")
+
+oneback_traj <- df_by_head_max_attention_1back %>%
+  group_by(model, n_params, seed_name, step_modded) %>%
+  summarise(max_val = max(mean_1back), .groups = "drop") %>%
+  mutate(metric = "1-back Attention")
+
+combined <- bind_rows(induction_traj, oneback_traj)
+
+combined_avg <- combined %>%
+  group_by(model, n_params, step_modded, metric) %>%
+  summarise(mean_val = mean(max_val), .groups = "drop")
+
+# Plot
+combined %>%
+  ggplot(aes(x = step_modded, y = max_val, 
+             color = metric, group = interaction(seed_name, metric))) +
+  geom_line(alpha = 0.2, linewidth = 0.4) +
+  geom_line(data = combined_avg, 
+            aes(x = step_modded, y = mean_val, color = metric, group = metric),
+            linewidth = 1.5) +
+  theme_minimal() +
+  labs(x = "Training Step",
+       y = "Max attention score",
+       color = "") +
+  scale_x_log10() +
+  scale_color_manual(values = c("1-back Attention" = "#E69F00", 
+                                "Induction (PS)" = "#0072B2")) +
+  geom_vline(xintercept = 1000, linetype = "dotted", linewidth = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(model, n_params))
+
+
+
+```
+
+
+### Analysis: expected onset step
+
+
+```{r induction_1back_onsets_derivative}
+df_dratio <- combined %>%
+  group_by(model, seed_name, metric) %>%
+  mutate(scaled = (max_val - min(max_val)) / (max(max_val) - min(max_val))) %>% 
+  group_by(model, n_params, seed_name, metric) %>%
+  arrange(step_modded, .by_group = TRUE) %>%
+  mutate(log_step = log10(step_modded),
+         d_ratio  = c(NA, diff(max_val) / diff(log_step))) %>%
+  ungroup()
+
+
+onset_at_deriv <- function(df, T) {
+  df %>% filter(d_ratio > T) %>%
+    group_by(model, n_params, seed_name, metric) %>%
+    slice_min(step_modded, with_ties = FALSE) %>% ungroup() %>%
+    transmute(model, n_params, seed_name, metric, onset_step = step_modded, threshold = T)
+}
+deriv_sweep <- map_dfr(seq(0.01, 0.3, by = 0.01), ~ onset_at_deriv(df_dratio, .x))
+
+
+
+### Now average across ratios
+df_onset_long = deriv_sweep %>% 
+  group_by(model, n_params, seed_name, metric) %>%
+  summarise(m_onset = mean(onset_step - 1)) 
+
+
+df_onset_long %>%
+  ggplot(aes(x = metric,
+             y = m_onset,
+             color = reorder(model, n_params))) +
+  geom_jitter(size = 5, alpha = .7, width = .05) +
+  scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_y_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  labs(x = "Metric",
+       y = "Mean Deriv. Step (Log10)",
+       color = "") 
+
+
+df_onset_long %>%
+  ggplot(aes(x = reorder(model, n_params),
+             y = m_onset,
+             color = metric)) +
+  geom_jitter(size = 5, alpha = .7, width = .05) +
+  scale_color_manual(values = viridisLite::viridis(2, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_y_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  labs(x = "Model",
+       y = "Mean Deriv. Step (Log10)",
+       color = "Metric") 
+
+
+mod_full = lmer(data = df_onset_long,
+                 log10(m_onset) ~ log10(n_params) * metric + 
+                  (1  |seed_name) + (1|model))
+summary(mod_full)
+
+
+offsets = df_onset_long %>%
+  pivot_wider(id_cols = c(model, seed_name, n_params),
+              values_from = m_onset,
+              names_from = metric) %>%
+  mutate(temporal_offset = `Induction (PS)` - `1-back Attention`) %>%
+  mutate(one_back_before = temporal_offset > 0)
+mean(offsets$one_back_before)
+
+summary(offsets$temporal_offset)
+
+```
+
+
+

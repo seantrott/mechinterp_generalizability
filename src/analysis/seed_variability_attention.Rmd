@@ -23,7 +23,11 @@ library(lmerTest)
 library(ggrepel)
 library(ggcorrplot)
 library(vroom)
+library(cluster)
+library(fpc)
 library(ggeffects)
+library(dtw)
+library(MuMIn)
 
 all_colors <- viridis::viridis(10, option = "mako")
 my_colors <- all_colors[c(3, 5, 7)]  # Selecting specific colors from the palette
@@ -266,6 +270,10 @@ ggplot(summary_df, aes(x = prop_binned, y = avg_max_ratio,
 summary(lmer(mean_1back ~ prop_layer + (1|Head) + (1|model), 
              data = df_pythia_models_final_step))
 
+mod_layer_depth = lmer(mean_1back ~ prop_layer + (1|Head) + (1|model), 
+             data = df_pythia_models_final_step)
+r.squaredGLMM(mod_layer_depth)
+
 
 ```
 
@@ -446,6 +454,9 @@ mod_ratio = lmer(data = results_summ,
 summary(mod_ratio)
 
 
+r.squaredGLMM(mod_ratio)
+
+
 #### Now identify inflection points with GAMs
 library(mgcv)
 library(dplyr)
@@ -566,6 +577,10 @@ df_peak %>%
 summary(lmer(data = df_peak, 
         max_attn ~ log10(n_params) + (1|seed_name)))
 
+
+r.squaredGLMM(lmer(data = df_peak, 
+        max_attn ~ log10(n_params) + (1|seed_name)))
+
 ### Plot average across d_ratio
 df_peak %>%
   ggplot(aes(x = n_params,
@@ -609,6 +624,10 @@ slopes_df %>%
 
 
 summary(lmer(data = slopes_df, 
+        estimate ~ log10(n_params) + (1|seed_name)))
+
+
+r.squaredGLMM(lmer(data = slopes_df, 
         estimate ~ log10(n_params) + (1|seed_name)))
 
 slopes_df %>%
@@ -718,26 +737,63 @@ cor_long = cor_long %>%
 
 cor_long$cor = cor_long$value
 
+
+
+### New analysis addressing colinearity
+cor_long <- cor_long %>%
+  mutate(
+    mean_log_params = (log10(n_params1) + log10(n_params2)) / 2,
+    abs_diff_log_params = abs(log10(n_params1) - log10(n_params2))
+  )
+
+### Get unique ones
+pairs <- cor_long %>%
+  filter(as.integer(Var1) < as.integer(Var2))
+
+summary(lm(data = pairs,
+           cor ~ mean_log_params + abs_diff_log_params))
+
+
+car::vif(lm(data = pairs,
+           cor ~ mean_log_params + abs_diff_log_params))
+
+
+
+
+### fisher z-transform
+pairs$z_cor <- atanh(pairs$cor)
+
+summary(lm(data = pairs,
+           z_cor ~ mean_log_params + abs_diff_log_params))
+
+
+
+### Old analysis
 summary(lm(data = cor_long,
              cor ~ same_model + log10(n_params1) + log10(n_params2)))
-
-
 summary(lm(data = cor_long %>% filter(same_model == FALSE),
              cor ~ log10(n_params1) + log10(n_params2)))
 
 
+car::vif(lm(data = cor_long,
+             cor ~ same_model + log10(n_params1) + log10(n_params2)))
+car::vif(lm(data = cor_long %>% filter(same_model == FALSE),
+             cor ~ log10(n_params1) + log10(n_params2)))
 
 
-cor_long %>%
+
+pairs %>%
   group_by(same_model) %>%
   summarise(mean_cor = mean(cor),
-            sd_cor = sd(cor))
+            sd_cor = sd(cor),
+            median_cor = median(cor))
 
-cor_long %>%
+pairs %>%
   group_by(same_model, n_params1) %>%
-  summarise(mean_cor = mean(cor))
+  summarise(mean_cor = mean(cor),
+            median_cor = median(cor))
 
-cor_long %>%
+pairs %>%
   mutate(abs_diff_params = round(abs(log10(n_params2 - log10(n_params1))), 2)) %>%
   mutate(diff_params = abs(n_params2 - n_params1)) %>%
   filter(same_model == FALSE) %>%
@@ -823,6 +879,70 @@ separation_stats <- centroids %>%
   ungroup()
 
 print(separation_stats)
+
+
+
+
+##### Re-analysis with silhoeutte score
+
+cor_mat <- df_wide %>%
+  drop_na() %>%
+  dplyr::select(starts_with("pythia-")) %>%
+  cor(use = "pairwise.complete.obs")
+
+dist_mat <- as.dist(1 - cor_mat)
+
+# labels = model size, in the SAME column order as cor_mat
+labels <- tibble(model_id = colnames(cor_mat)) %>%
+  separate(model_id, into = c("model","seed_name"), sep = " - seed", remove = FALSE) %>%
+  left_join(df_params, by = "model") %>%
+  pull(n_params)
+
+clustering <- as.integer(factor(labels))
+
+sil <- silhouette(clustering, dist_mat)
+summary(sil)          # overall + PER-CLUSTER avg silhouette width
+
+stats <- cluster.stats(d = dist_mat, clustering = clustering)
+stats$avg.silwidth    # silhouette
+stats$ch              # Calinski-Harabasz (note: your separation ratio ≈ this)
+stats$dunn            # Dunn
+
+tibble(
+  size = c("14M","70M","160M","410M"),
+  avg_sil = summary(sil)$clus.avg.widths
+)
+
+### Permutation
+observed <- cluster.stats(d = dist_mat, clustering = clustering)$avg.silwidth
+
+set.seed(42)
+null_sil <- replicate(5000, {
+  cluster.stats(d = dist_mat, clustering = sample(clustering))$avg.silwidth
+})
+p_value <- (sum(null_sil >= observed) + 1) / (length(null_sil) + 1)
+p_value
+
+
+#### Compare to clustering
+library(cluster) 
+library(aricode)  
+library(fpc)
+pamk_fit <- pamk(dist_mat, krange = 2:8, diss = TRUE) 
+pamk_fit$nc                                       
+
+
+tibble(
+  k = 2:8,
+  avg_sil = sapply(2:8, function(k) pam(dist_mat, k, diss = TRUE)$silinfo$avg.width)
+)
+
+pam_fit <- pam(dist_mat, k = 2, diss = TRUE)   # k = known number of sizes
+truth   <- factor(labels)
+
+ARI(pam_fit$clustering, truth)  
+NMI(pam_fit$clustering, truth)
+table(pam_fit$clustering, truth) 
 ```
 
 
@@ -864,6 +984,265 @@ df_by_head_max_attention_first %>%
     mean_sd = mean(sd_across_seeds),
     mean_cv = mean(cv)
   )
+
+```
+
+
+## Alternative analysis using DTW
+
+
+```{r dtw_analysis_1back}
+traj_mat <- df_wide %>%
+  arrange(step_modded) %>%
+  select(-step_modded)
+
+
+model_ids <- colnames(traj_mat)
+
+dtw_mat <- matrix(
+  NA,
+  nrow = length(model_ids),
+  ncol = length(model_ids),
+  dimnames = list(model_ids, model_ids)
+)
+
+for(i in seq_along(model_ids)) {
+  for(j in seq_along(model_ids)) {
+
+    x <- traj_mat[[i]]
+    y <- traj_mat[[j]]
+
+    alignment <- dtw(
+      x,
+      y,
+      distance.only = TRUE
+    )
+
+    dtw_mat[i, j] <- alignment$distance
+  }
+}
+
+
+
+dtw_long <- as.data.frame(dtw_mat) %>%
+  rownames_to_column("Var1") %>%
+  pivot_longer(
+    cols = -Var1,
+    names_to = "Var2",
+    values_to = "dtw_distance"
+  ) %>%
+  mutate(
+    Var1 = factor(Var1, levels = model_id_to_params),
+    Var2 = factor(Var2, levels = model_id_to_params)
+  )
+
+
+dtw_long %>%
+  ggplot(aes(Var1, Var2, fill = dtw_distance)) +
+  geom_tile() +
+  coord_fixed() +
+  scale_x_discrete(labels = \(x) str_replace(x, "pythia-", "")) +
+  scale_y_discrete(labels = \(x) str_replace(x, "pythia-", "")) +
+  scale_fill_viridis_c(option = "magma", direction = -1) +
+  theme_minimal(base_size = 15) +
+  labs(
+    title = "1-back convergence",
+    x = "",
+    y = "",
+    fill = "Distance"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+    axis.text.y = element_text(size = 7)
+  )
+
+dtw_long <- dtw_long %>%
+  # extract everything before the last " - " as the model
+  mutate(
+    model1 = str_replace(Var1, " - .*", ""),
+    model2 = str_replace(Var2, " - .*", ""),
+    same_model = model1 == model2
+  ) %>% 
+  mutate(same_exact = Var1 == Var2) %>%
+  filter(same_exact == FALSE)
+
+
+dtw_long <- dtw_long %>%
+  left_join(
+    df_pythia_models %>%
+      ungroup() %>%
+      distinct(model, n_params),
+    by = c("model1" = "model")
+  ) %>%
+  rename(n_params1 = n_params) %>%
+  left_join(
+    df_pythia_models %>%
+      ungroup() %>%
+      distinct(model, n_params),
+    by = c("model2" = "model")
+  ) %>%
+  rename(n_params2 = n_params)
+
+
+
+### New analysis
+dtw_long <- dtw_long %>%
+  mutate(
+    mean_log_params = (log10(n_params1) + log10(n_params2)) / 2,
+    abs_diff_log_params = abs(log10(n_params1) - log10(n_params2))
+  )
+
+### Get unique ones
+pairs_dtw <- dtw_long %>%
+  filter(as.integer(Var1) < as.integer(Var2))
+
+summary(lm(data = pairs_dtw,
+           dtw_distance ~ mean_log_params + abs_diff_log_params))
+
+car::vif(lm(data = pairs_dtw,
+           dtw_distance ~ mean_log_params + abs_diff_log_params))
+
+
+
+pairs_dtw %>%
+  group_by(same_model) %>%
+  summarise(mean_dtw = mean(dtw_distance),
+            sd_dtw = sd(dtw_distance),
+            median_dtw = median(dtw_distance))
+
+
+pairs_dtw %>%
+  group_by(n_params1) %>%
+  summarise(mean_dtw = mean(dtw_distance),
+            sd_dtw = sd(dtw_distance),
+            median_dtw = median(dtw_distance))
+
+```
+
+
+
+Now with normalized:
+
+```{r dtw_normalized_1back}
+traj_mat <- df_wide %>%
+  arrange(step_modded) %>%
+  select(-step_modded)
+
+
+model_ids <- colnames(traj_mat)
+
+dtw_mat <- matrix(
+  NA,
+  nrow = length(model_ids),
+  ncol = length(model_ids),
+  dimnames = list(model_ids, model_ids)
+)
+
+for(i in seq_along(model_ids)) {
+  for(j in seq_along(model_ids)) {
+    x <- as.numeric(scale(traj_mat[[i]]))
+    y <- as.numeric(scale(traj_mat[[j]]))
+    alignment <- dtw(x, y, distance.only = TRUE)
+    dtw_mat[i, j] <- alignment$normalizedDistance
+  }
+}
+
+
+
+dtw_long <- as.data.frame(dtw_mat) %>%
+  rownames_to_column("Var1") %>%
+  pivot_longer(
+    cols = -Var1,
+    names_to = "Var2",
+    values_to = "dtw_distance"
+  ) %>%
+  mutate(
+    Var1 = factor(Var1, levels = model_id_to_params),
+    Var2 = factor(Var2, levels = model_id_to_params)
+  )
+
+
+dtw_long %>%
+  ggplot(aes(Var1, Var2, fill = dtw_distance)) +
+  geom_tile() +
+  coord_fixed() +
+  scale_x_discrete(labels = \(x) str_replace(x, "pythia-", "")) +
+  scale_y_discrete(labels = \(x) str_replace(x, "pythia-", "")) +
+  scale_fill_viridis_c(option = "magma", direction = -1) +
+  theme_minimal(base_size = 15) +
+  labs(
+    title = "1-back convergence",
+    x = "",
+    y = "",
+    fill = "Distance"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+    axis.text.y = element_text(size = 7)
+  )
+
+dtw_long <- dtw_long %>%
+  # extract everything before the last " - " as the model
+  mutate(
+    model1 = str_replace(Var1, " - .*", ""),
+    model2 = str_replace(Var2, " - .*", ""),
+    same_model = model1 == model2
+  ) %>% 
+  mutate(same_exact = Var1 == Var2) %>%
+  filter(same_exact == FALSE)
+
+
+dtw_long <- dtw_long %>%
+  left_join(
+    df_pythia_models %>%
+      ungroup() %>%
+      distinct(model, n_params),
+    by = c("model1" = "model")
+  ) %>%
+  rename(n_params1 = n_params) %>%
+  left_join(
+    df_pythia_models %>%
+      ungroup() %>%
+      distinct(model, n_params),
+    by = c("model2" = "model")
+  ) %>%
+  rename(n_params2 = n_params)
+
+
+
+### New analysis
+dtw_long <- dtw_long %>%
+  mutate(
+    mean_log_params = (log10(n_params1) + log10(n_params2)) / 2,
+    abs_diff_log_params = abs(log10(n_params1) - log10(n_params2))
+  )
+
+### Get unique ones
+pairs_dtw <- dtw_long %>%
+  filter(as.integer(Var1) < as.integer(Var2))
+
+summary(lm(data = pairs_dtw,
+           dtw_distance ~ mean_log_params + abs_diff_log_params))
+
+car::vif(lm(data = pairs_dtw,
+           dtw_distance ~ mean_log_params + abs_diff_log_params))
+
+
+
+pairs_dtw %>%
+  group_by(same_model) %>%
+  summarise(mean_dtw = mean(dtw_distance),
+            sd_dtw = sd(dtw_distance),
+            median_dtw = median(dtw_distance))
+
+
+pairs_dtw %>%
+  group_by(n_params1) %>%
+  summarise(mean_dtw = mean(dtw_distance),
+            sd_dtw = sd(dtw_distance),
+            median_dtw = median(dtw_distance))
 
 ```
 
