@@ -2,13 +2,6 @@
 Induction head detection across BabyLM baseline GPT-2 models and checkpoints.
 Computes prefix-matching score (PS) per head and associative recall (AR) per model.
 
-Checkpoint naming convention from model card:
-  - Every 1M words for the first 10M words: chck_1M ... chck_10M
-  - Every 10M words afterward: chck_20M, chck_30M, ..., chck_100M
-  - Final: main
-
-Usage:
-    python run_induction_scores_babylm.py
 """
 
 import os
@@ -50,7 +43,7 @@ def count_parameters(model):
 def parse_words_seen(checkpoint):
     """Convert checkpoint name to number of words seen."""
     if checkpoint == "main":
-        return None  # will be set per-model based on total budget
+        return None  
     # chck_5M -> 5_000_000
     return int(checkpoint.replace("chck_", "").replace("M", "")) * 1_000_000
 
@@ -61,18 +54,12 @@ def generate_repeated_random_tokens(vocab_size, seq_len, num_samples):
         torch.randperm(vocab_size)[:seq_len]
         for _ in range(num_samples)
     ])
-    return tokens.repeat(1, 2)  # (num_samples, seq_len * 2)
-
+    return tokens.repeat(1, 2)  
 
 def compute_induction_scores(model, config, seq_len=50, num_samples=100,
                               batch_size=50, device="cpu"):
     """
     Compute PS per head per sample and AR per sample.
-
-    Returns:
-        ps_all: np.ndarray (num_samples, n_layers, n_heads)
-        ar_acc_all: np.ndarray (num_samples,)
-        ar_rank_all: np.ndarray (num_samples,)
     """
     n_layers = config.num_hidden_layers
     n_heads = config.num_attention_heads
@@ -89,19 +76,17 @@ def compute_induction_scores(model, config, seq_len=50, num_samples=100,
         with torch.no_grad():
             out = model(tokens, output_attentions=True)
 
-        # ── PS: attention from repeated-half positions to induction targets ──
         src = torch.arange(seq_len, seq_len * 2)
         tgt = src - (seq_len - 1)
 
         batch_ps = torch.zeros(bs, n_layers, n_heads)
         for layer in range(n_layers):
-            attn = out.attentions[layer]  # (bs, heads, seq, seq)
+            attn = out.attentions[layer]  
             batch_ps[:, layer, :] = attn[:, :, src, tgt].mean(dim=-1).cpu()
 
         ps_all.append(batch_ps)
 
-        # ── AR: does the model predict B given [A, B, ..., A]? ──
-        logits = out.logits  # (bs, seq_len*2, vocab)
+        logits = out.logits  
         target_ids = tokens[:, 1:seq_len + 1]
         relevant_logits = logits[:, seq_len:seq_len * 2, :]
 

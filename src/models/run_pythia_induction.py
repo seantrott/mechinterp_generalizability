@@ -62,11 +62,6 @@ def compute_induction_scores(model, config, seq_len=50, num_samples=100,
                               batch_size=50, device="cpu"):
     """
     Compute PS per head per sample and AR per sample.
-
-    Returns:
-        ps_all: np.ndarray (num_samples, n_layers, n_heads) — mean PS per sample
-        ar_acc_all: np.ndarray (num_samples,) — per-sample accuracy
-        ar_rank_all: np.ndarray (num_samples,) — per-sample mean rank
     """
     n_layers = config.num_hidden_layers
     n_heads = config.num_attention_heads

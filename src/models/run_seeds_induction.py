@@ -19,9 +19,9 @@ from transformers import GPTNeoXForCausalLM, AutoTokenizer, AutoConfig
 # ── Configuration ───────────────────────────────────────────────────────
 
 MODELS = [
-    # 'EleutherAI/pythia-14m',
-   # 'EleutherAI/pythia-70m',
-    #'EleutherAI/pythia-160m',
+    'EleutherAI/pythia-14m',
+   'EleutherAI/pythia-70m',
+    'EleutherAI/pythia-160m',
     'EleutherAI/pythia-410m'
 ]
 
@@ -56,11 +56,6 @@ def compute_induction_scores(model, config, seq_len=50, num_samples=100,
                               batch_size=50, device="cpu"):
     """
     Compute PS per head per sample and AR per sample.
-
-    Returns:
-        ps_all: np.ndarray (num_samples, n_layers, n_heads) — mean PS per sample
-        ar_acc_all: np.ndarray (num_samples,) — per-sample accuracy
-        ar_rank_all: np.ndarray (num_samples,) — per-sample mean rank
     """
     n_layers = config.num_hidden_layers
     n_heads = config.num_attention_heads
@@ -77,34 +72,31 @@ def compute_induction_scores(model, config, seq_len=50, num_samples=100,
         with torch.no_grad():
             out = model(tokens, output_attentions=True)
 
-        # ── PS: attention from repeated-half positions to induction targets ──
         src = torch.arange(seq_len, seq_len * 2)
         tgt = src - (seq_len - 1)
 
         batch_ps = torch.zeros(bs, n_layers, n_heads)
         for layer in range(n_layers):
             attn = out.attentions[layer]  # (bs, heads, seq, seq)
-            # mean PS across positions within each sample
             batch_ps[:, layer, :] = attn[:, :, src, tgt].mean(dim=-1).cpu()
 
         ps_all.append(batch_ps)
 
-        # ── AR: does the model predict B given [A, B, ..., A]? ──
-        logits = out.logits  # (bs, seq_len*2, vocab)
-        target_ids = tokens[:, 1:seq_len + 1]  # the B tokens from first half
-        relevant_logits = logits[:, seq_len:seq_len * 2, :]  # logits at repeated-half positions
+        logits = out.logits 
+        target_ids = tokens[:, 1:seq_len + 1] 
+        relevant_logits = logits[:, seq_len:seq_len * 2, :] 
 
         target_logits = torch.gather(
             relevant_logits, dim=-1, index=target_ids.unsqueeze(-1)
         )  # (bs, seq_len, 1)
 
-        ranks = (relevant_logits > target_logits).sum(dim=-1)  # (bs, seq_len)
-        ar_acc_all.append((ranks == 0).float().mean(dim=1).cpu())  # per-sample accuracy
-        ar_rank_all.append(ranks.float().mean(dim=1).cpu())  # per-sample mean rank
+        ranks = (relevant_logits > target_logits).sum(dim=-1) 
+        ar_acc_all.append((ranks == 0).float().mean(dim=1).cpu()) 
+        ar_rank_all.append(ranks.float().mean(dim=1).cpu()) 
 
-    ps_all = torch.cat(ps_all, dim=0).numpy()        # (num_samples, n_layers, n_heads)
-    ar_acc_all = torch.cat(ar_acc_all, dim=0).numpy()  # (num_samples,)
-    ar_rank_all = torch.cat(ar_rank_all, dim=0).numpy()  # (num_samples,)
+    ps_all = torch.cat(ps_all, dim=0).numpy()       
+    ar_acc_all = torch.cat(ar_acc_all, dim=0).numpy()  
+    ar_rank_all = torch.cat(ar_rank_all, dim=0).numpy()  
 
     return ps_all, ar_acc_all, ar_rank_all
 
