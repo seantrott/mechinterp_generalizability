@@ -29,11 +29,11 @@ Files for replication and generalization study:
 - `babylm_replication`: Replication using BabyLM models.
 - `gemstones_replication`: Replication using the Gemstones models. Also includes positional analysis of entire model sample.
 
+Files for appendix analysis:
+
+- `induction_configurational`: analysis of K-composition. 
+
 
 ## Modeling files
 
-The `src/models` directory contains the Python code to actually run each of the attention analyses. 
-
-## Appendix configurational analysis
-
-For the analysis in the appendix of the configurational axis for induction heads, see this [GitHub repository](https://github.com/seantrott/induction_configurational).
+The `src/models` directory contains the Python code to actually run each of the scripts to extract attention scores.
