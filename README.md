@@ -16,14 +16,24 @@ The `data/raw` directory contains an Excel file for the Natural Stories Corpus (
 
 The `src/analysis` directory contains files for key analyses, including the `.Rmd` file and the knit `.html` file: 
 
-- 
+Original analyses of random seeds:
+
+- `seed_variability_attention`: Variability in 1-back attention across random seeds.
+- `seed_variability_first_token`: Variability in first-token attention across random seeds.
+- `seed_variability_induction`: Variability in induction heads across random seeds.
+- `induction_and_1back`: Identifies induction heads and 1-back attention heads.
+
+Files for replication and generalization study:
+
+- `induction_pythia_replication`: Replication of the induction head analyses in Pythia.
+- `babylm_replication`: Replication using BabyLM models.
+- `gemstones_replication`: Replication using the Gemstones models. Also includes positional analysis of entire model sample.
+
 
 ## Modeling files
 
+The `src/models` directory contains the Python code to actually run each of the attention analyses. 
 
-Code and data to reproduce analysis of 1-back attention across random seeds of Pythia. 
+## Appendix configurational analysis
 
-- `src/models/run_seeds_attn.py` collects 1-back attention for each head in each layer for each sentence in the Natural Stories Corpus. 
-- `process_attns.py` summarizes these scores to produce an average 1-back attention score for each head/layer across sentences. 
-- The output of `process_attns.py` is included in `data/processed/attention_summaries`.
-- The full analysis can be run in `src/analysis/seed_variability_attention_anon.Rmd`.
+For the analysis in the appendix of the configurational axis for induction heads, see this [GitHub repository](https://github.com/seantrott/induction_configurational).

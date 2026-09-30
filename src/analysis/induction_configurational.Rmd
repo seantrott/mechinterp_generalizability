@@ -1,0 +1,1323 @@
+---
+title: "Analysis of QK-composition"
+author: "Sean Trott"
+date: "August 15, 2025"
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dpi = 300, fig.format = "pdf")
+```
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(lme4)
+library(viridis)
+library(ggridges)
+library(lmerTest)
+library(ggrepel)
+library(ggcorrplot)
+library(vroom)
+library(ggeffects)
+library(dplyr)
+library(pROC)
+
+all_colors <- viridis::viridis(10, option = "mako")
+my_colors <- all_colors[c(3, 5, 7)]  # Selecting specific colors from the palette
+```
+
+# Load Pythia data
+
+## Load QK scores heads
+
+```{r include=FALSE}
+## setwd("/Users/seantrott/Dropbox/UCSD/Research/NLMs/epistemology/mechinterp_generalizability/src/analysis")
+directory_path <- "../../data/processed/composed_qk_frob_results/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+df_pythia_models <- bind_rows(csv_list) %>%
+  mutate(model = sub("^EleutherAI/", "", mpath))  %>%
+  mutate(step_modded = step + 1) %>%
+  mutate(layer = layer + 1) %>%
+  mutate(partner_layer = partner_layer + 1) %>%
+  mutate(seed_name = paste0("seed", seed))
+nrow(df_pythia_models)
+
+
+table(df_pythia_models$seed)
+table(df_pythia_models$mpath)
+
+```
+
+## Load prefix-matching scores
+
+```{r include=FALSE}
+directory_path <- "../../data/processed/induction_results/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+df_pythia_models_ps <- bind_rows(csv_list) %>%
+  mutate(model = sub("^EleutherAI/", "", mpath))  %>%
+  mutate(step_modded = step + 1) %>%
+  mutate(layer = layer + 1)
+nrow(df_pythia_models_ps)
+
+
+table(df_pythia_models_ps$seed)
+table(df_pythia_models_ps$mpath)
+
+
+
+### Create head-level summaries
+df_pythia_models_head_summaries_ps = df_pythia_models_ps %>%
+  group_by(mpath, n_params, step, step_modded, seed, model,
+           layer, head) %>%
+  summarise(mean_ps = mean(ps),
+            mean_ar_acc = mean(ar_acc),
+            mean_ar_rank = mean(ar_mean_rank)) %>%
+  mutate(seed_name = paste0("seed", seed))
+
+
+```
+
+
+# Analysis
+
+## Final step
+
+```{r qk_scores_final_step}
+df_pythia_models_final = df_pythia_models %>%
+  filter(step == 143000)
+
+df_pythia_models_final %>%
+  filter(model == "pythia-14m") %>%
+  ggplot(aes(x = layer,
+             y = head,
+             fill = composed_qk_score)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Head",
+       fill = "Composed QK Score") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Composed QK Score") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(seed_name, n_params))
+
+
+
+
+### Max by layer
+df_pythia_models_final %>%
+  group_by(mpath, seed, layer, n_params) %>%
+  summarise(max_qk = max(composed_qk_score)) %>%
+  ggplot(aes(x = layer,
+             y = seed,
+             fill = max_qk)) +
+  geom_tile() +
+  labs(x = "Layer",
+       y = "Seed",
+       fill = "Max Composed QK Score") +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = 0, 
+                       name = "Max Composed QK Score") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        strip.text.y = element_text(angle = 0), # Keep facet labels horizontal
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom") +
+  facet_wrap(~reorder(mpath, n_params))
+
+```
+
+
+## Over training
+
+```{r qk_scores_training_dynamics}
+
+### Track max QK at each time point for each seed, across layer/head
+df_max_qk_by_step = df_pythia_models %>%
+  filter(model == "pythia-14m") %>%
+  group_by(model, n_params, step_modded, seed, seed_name) %>%
+  slice_max(composed_qk_score)
+
+
+summary_avg = df_max_qk_by_step %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(
+    mean_across_seeds = mean(composed_qk_score)
+  )
+
+grand_avg <- df_max_qk_by_step %>%
+  group_by(step_modded) %>%
+  summarise(grand_mean = mean(composed_qk_score))
+
+df_max_qk_by_step %>%
+  ggplot(aes(x = step_modded,
+             y = composed_qk_score,
+             color = factor(seed_name))) +
+  geom_line(size = .6, alpha = .4) +   # individual curves
+  geom_line(data = summary_avg, 
+            aes(x = step_modded, y = mean_across_seeds), 
+            color = "black", size = 2) +      # per-model average
+  # geom_line(data = grand_avg, aes(x = step_modded, y = grand_mean),
+  #          color = "red", size = 1.2, inherit.aes = FALSE) +
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "Max Composed QK Score",
+       color = "") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(9, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  facet_wrap(~reorder(model, n_params))
+
+```
+
+
+## Frob score over training
+
+```{r qk_scores_training_dynamics_frob}
+
+### Track max QK at each time point for each seed, across layer/head
+df_max_qk_by_step = df_pythia_models %>%
+  filter(model == "pythia-14m") %>%
+  group_by(model, n_params, step_modded, seed, seed_name) %>%
+  slice_max(composed_qk_frob)
+
+
+summary_avg = df_max_qk_by_step %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(
+    mean_across_seeds = mean(composed_qk_frob)
+  )
+
+df_max_qk_by_step %>%
+  ggplot(aes(x = step_modded,
+             y = composed_qk_frob,
+             color = factor(seed_name))) +
+  geom_line(size = .6, alpha = .4) +   # individual curves
+  geom_line(data = summary_avg, 
+            aes(x = step_modded, y = mean_across_seeds), 
+            color = "black", size = 2) +      # per-model average
+  # geom_line(data = grand_avg, aes(x = step_modded, y = grand_mean),
+  #          color = "red", size = 1.2, inherit.aes = FALSE) +
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "Max Composed QK Score",
+       color = "") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(9, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  facet_wrap(~reorder(model, n_params))
+
+```
+
+## Seeds of specializaton?
+
+Is there any systematic difference between heads that eventually look like induction heads (based on threshold) and those that don't, *pre-transition*? It seems the answer is no.
+
+```{r seeds_specialization}
+# Mark which heads become induction heads at the final checkpoint
+INDUCTION_THRESHOLD <- 0.8
+
+induction_status <- df_pythia_models %>%
+  filter(step == 143000, model == "pythia-14m") %>%
+  mutate(is_induction_final = composed_qk_score > INDUCTION_THRESHOLD) %>%
+  select(seed_name, layer, head, is_induction_final)
+
+# Annotate all checkpoints with future status
+df_with_future <- df_pythia_models %>%
+  filter(model == "pythia-14m") %>%
+  inner_join(induction_status, by = c("seed_name", "layer", "head"))
+
+# Plot: composed-QK over training, split by future induction status
+df_with_future %>%
+  group_by(step_modded, is_induction_final) %>%
+  summarise(mean_qk = mean(composed_qk_score),
+            se_qk = sd(composed_qk_score) / sqrt(n()),
+            .groups = "drop") %>%
+  ggplot(aes(x = step_modded, y = mean_qk, color = is_induction_final)) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = mean_qk - se_qk, ymax = mean_qk + se_qk,
+                  fill = is_induction_final), alpha = 0.2, color = NA) +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted") +
+  labs(x = "Training Step (Log10)", y = "Mean Composed QK Score",
+       color = "Future induction head", fill = "Future induction head") +
+  theme_minimal() +
+  theme(text = element_text(size = 14), legend.position = "bottom")
+
+
+## Is there any signal in early steps?
+very_early <- df_with_future %>% filter(step_modded <= 256)
+
+mod_very_early <- lmer(composed_qk_score ~ is_induction_final +
+                       (1 | seed_name) + (1 | step_modded),
+                       data = very_early)
+summary(mod_very_early)
+```
+
+
+# Correlation with prefix-matching scores
+
+```{r}
+### Merge data
+df_merged_qk_and_ps = df_pythia_models_head_summaries_ps %>%
+  inner_join(df_pythia_models)
+nrow(df_merged_qk_and_ps)
+
+
+```
+
+## Final step
+
+```{r merged_final_step}
+df_merged_qk_and_ps_final = df_merged_qk_and_ps %>%
+  filter(step == 143000)
+
+df_merged_qk_and_ps_final %>%
+  filter(model == "pythia-14m") %>%
+  ggplot(aes(x = composed_qk_score,
+             y = mean_ps,
+             color = factor(layer))) +
+  geom_point(alpha = .6) +
+  geom_smooth(color = "gray") +
+  labs(x = "Composed QK Score",
+       y = "Mean Prefix-Matching Score",
+       color = "Layer") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(5, option = "magma", 
+                                                   begin = 0.8, end = 0.15)) + 
+  facet_wrap(~reorder(model, n_params))
+
+df_merged_qk_and_ps_final %>%
+  filter(model == "pythia-14m") %>%
+  ggplot(aes(x = composed_qk_score,
+             y = mean_ps,
+             color = factor(layer))) +
+  geom_point(alpha = .6) +
+  geom_smooth(color = "gray") +
+  labs(x = "Composed QK Score",
+       y = "Mean Prefix-Matching Score",
+       color = "Layer") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(5, option = "magma", 
+                                                   begin = 0.8, end = 0.15)) + 
+  facet_wrap(~reorder(seed_name, n_params))
+
+
+mod_full = lmer(data = df_merged_qk_and_ps_final,
+             mean_ps ~ composed_qk_score + layer + (1|seed_name),
+             REML = FALSE)
+
+mod_reduced = lmer(data = df_merged_qk_and_ps_final,
+             mean_ps ~ layer + (1|seed_name),
+             REML = FALSE)
+
+summary(mod_full)
+anova(mod_full,mod_reduced)
+
+
+
+df_merged_qk_and_ps_final %>%
+  group_by(model, n_params, seed_name) %>%
+  summarise(r_spearman = cor(mean_ps, composed_qk_score, method = "spearman"),
+            r_pearson = cor(mean_ps, composed_qk_score, method = "pearson"))
+
+df_merged_qk_and_ps_final %>%
+  group_by(model, n_params, seed_name) %>%
+  summarise(r_spearman = cor(mean_ps, composed_qk_score, method = "spearman"),
+            r_pearson = cor(mean_ps, composed_qk_score, method = "pearson")) %>%
+  summarise(mean(r_spearman),
+            mean(r_pearson))
+
+
+```
+
+## Final step (frob)
+
+```{r merged_final_step_frob}
+df_merged_qk_and_ps_final = df_merged_qk_and_ps %>%
+  filter(step == 143000)
+
+df_merged_qk_and_ps_final %>%
+  filter(model == "pythia-14m") %>%
+  ggplot(aes(x = composed_qk_frob,
+             y = mean_ps,
+             color = factor(layer))) +
+  geom_point(alpha = .6) +
+  geom_smooth(color = "gray") +
+  labs(x = "Composed QK Frob",
+       y = "Mean Prefix-Matching Score",
+       color = "Layer") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(5, option = "magma", 
+                                                   begin = 0.8, end = 0.15)) + 
+  facet_wrap(~reorder(model, n_params))
+
+df_merged_qk_and_ps_final %>%
+  filter(model == "pythia-14m") %>%
+  ggplot(aes(x = composed_qk_frob,
+             y = mean_ps,
+             color = factor(layer))) +
+  geom_point(alpha = .6) +
+  geom_smooth(color = "gray") +
+  labs(x = "Composed QK Frob",
+       y = "Mean Prefix-Matching Score",
+       color = "Layer") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(5, option = "magma", 
+                                                   begin = 0.8, end = 0.15)) + 
+  facet_wrap(~reorder(seed_name, n_params))
+
+
+mod_full = lmer(data = df_merged_qk_and_ps_final,
+             mean_ps ~ composed_qk_frob + layer + (1|seed_name),
+             REML = FALSE)
+
+mod_reduced = lmer(data = df_merged_qk_and_ps_final,
+             mean_ps ~ layer + (1|seed_name),
+             REML = FALSE)
+
+summary(mod_full)
+anova(mod_full,mod_reduced)
+
+
+
+df_merged_qk_and_ps_final %>%
+  group_by(model, n_params, seed_name) %>%
+  summarise(r_spearman = cor(mean_ps, composed_qk_frob, method = "spearman"),
+            r_pearson = cor(mean_ps, composed_qk_frob, method = "pearson"))
+
+df_merged_qk_and_ps_final %>%
+  group_by(model, n_params, seed_name) %>%
+  summarise(r_spearman = cor(mean_ps, composed_qk_frob, method = "spearman"),
+            r_pearson = cor(mean_ps, composed_qk_frob, method = "pearson")) %>%
+  summarise(mean(r_spearman),
+            mean(r_pearson))
+
+
+cor.test(df_merged_qk_and_ps_final$composed_qk_frob,
+         df_merged_qk_and_ps_final$mean_ps)
+
+cor.test(df_merged_qk_and_ps_final$composed_qk_frob,
+         df_merged_qk_and_ps_final$mean_ps, method = "spearman")
+
+
+```
+
+
+## Classify heads using metrics
+
+Here, we label heads as induction or not and ask whether the two metrics combined predict their status.
+
+```{r}
+### First, regression (Even though not ideal)
+summary(lm(data = df_merged_qk_and_ps_final,
+           mean_ps ~ composed_qk_frob + composed_qk_score))$adj.r.squared
+summary(lm(data = df_merged_qk_and_ps_final,
+           mean_ps ~ composed_qk_frob ))$adj.r.squared
+summary(lm(data = df_merged_qk_and_ps_final,
+           mean_ps ~ composed_qk_score ))$adj.r.squared
+
+
+
+### Now use classifier
+ps_thresh <- 0.8
+
+model_df <- df_merged_qk_and_ps_final %>%
+  ungroup() %>%
+  filter(model == "pythia-14m", step == 143000) %>%
+  transmute(seed, layer, head,
+            qk_eig  = composed_qk_score,
+            qk_frob = composed_qk_frob,
+            is_induction = as.integer(mean_ps >= ps_thresh))
+
+table(model_df$is_induction)
+table(model_df$is_induction) / nrow(model_df)
+
+
+# --- leave-one-seed-out CV AUC for a given formula ---
+seeds <- sort(unique(model_df$seed))
+cv_auc <- function(formula) {
+  preds <- lapply(seeds, function(s) {
+    tr <- filter(model_df, seed != s); te <- filter(model_df, seed == s)
+    fit <- glm(formula, data = tr, family = binomial)
+    te$prob <- predict(fit, newdata = te, type = "response")
+    te
+  }) %>% bind_rows()
+  as.numeric(auc(roc(preds$is_induction, preds$prob, quiet = TRUE)))
+}
+
+cv_auc(is_induction ~ qk_eig)              # eigenvalue alone
+cv_auc(is_induction ~ qk_frob)             # Frobenius alone
+cv_auc(is_induction ~ qk_eig + qk_frob)    # both
+
+
+
+### Precision/recall
+cv_preds <- function(formula) {
+  lapply(seeds, function(s) {
+    tr <- filter(model_df, seed != s); te <- filter(model_df, seed == s)
+    fit <- glm(formula, data = tr, family = binomial)
+    te$prob <- predict(fit, newdata = te, type = "response")
+    te
+  }) %>% bind_rows()
+}
+
+p <- cv_preds(is_induction ~ qk_frob)
+
+thresh <- 0.5
+p %>% mutate(pred = as.integer(prob >= thresh)) %>% count(is_induction, pred)  # confusion matrix
+
+p %>% mutate(pred = as.integer(prob >= thresh)) %>%
+  summarise(tp = sum(pred==1 & is_induction==1),
+            fp = sum(pred==1 & is_induction==0),
+            fn = sum(pred==0 & is_induction==1),
+            precision = tp/(tp+fp),
+            recall    = tp/(tp+fn),
+            f1        = 2*precision*recall/(precision+recall))
+
+pr_metrics <- function(formula, thresh = 0.5) {
+  cv_preds(formula) %>%
+    mutate(pred = as.integer(prob >= thresh)) %>%
+    summarise(tp = sum(pred==1 & is_induction==1),
+              fp = sum(pred==1 & is_induction==0),
+              fn = sum(pred==0 & is_induction==1),
+              precision = tp/(tp+fp), recall = tp/(tp+fn),
+              f1 = 2*precision*recall/(precision+recall))
+}
+
+pr_metrics(is_induction ~ qk_frob)            # Frobenius
+pr_metrics(is_induction ~ qk_eig)             # eigenvalue
+pr_metrics(is_induction ~ qk_eig + qk_frob)   # both
+```
+
+
+## Over training
+
+```{r merged_over_training}
+# Per-seed max for PS and QK at each step (head-level metrics)
+df_max_per_seed <- df_merged_qk_and_ps %>%
+  filter(model == "pythia-14m") %>%
+  group_by(model, n_params, step_modded, seed, seed_name) %>%
+  summarise(
+    max_ps = max(mean_ps, na.rm = TRUE),
+    max_qk = max(composed_qk_score, na.rm = TRUE),
+    ar_acc = first(mean_ar_acc),  # AR is model-level, same for all heads
+    .groups = "drop"
+  )
+
+# Average across seeds within each model
+df_avg <- df_max_per_seed %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(
+    `Induction (PS)` = mean(max_ps),
+    `Max QK` = mean(max_qk),
+    `Associative Recall (Acc)` = mean(ar_acc),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(cols = c(`Induction (PS)`, `Max QK`, `Associative Recall (Acc)`),
+               names_to = "metric",
+               values_to = "value")
+
+ggplot(df_avg, aes(x = step_modded, y = value, color = metric)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 1.5) +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1.2) +
+  labs(x = "Training Step (Log10)",
+       y = "Score",
+       color = "") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = my_colors) +
+  facet_wrap(~reorder(model, n_params))
+
+
+
+### With lines per seed
+# Per-seed long format (thin lines)
+df_per_seed_long <- df_max_per_seed %>%
+  rename(`Induction (PS)` = max_ps,
+         `Max QK` = max_qk,
+         `Associative Recall (Acc)` = ar_acc) %>%
+  pivot_longer(cols = c(`Induction (PS)`, `Max QK`, `Associative Recall (Acc)`),
+               names_to = "metric",
+               values_to = "value")
+
+# Average across seeds (bold lines) — your existing df_avg
+df_avg <- df_max_per_seed %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(
+    `Induction (PS)` = mean(max_ps),
+    `Max QK` = mean(max_qk),
+    `Associative Recall (Acc)` = mean(ar_acc),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(cols = c(`Induction (PS)`, `Max QK`, `Associative Recall (Acc)`),
+               names_to = "metric",
+               values_to = "value")
+
+ggplot() +
+  # thin per-seed lines
+  geom_line(data = df_per_seed_long,
+            aes(x = step_modded, y = value,
+                color = metric, group = interaction(metric, seed_name),
+                linetype = metric),
+            alpha = 0.3, size = 0.5) +
+  # bolded average lines
+  geom_line(data = df_avg,
+            aes(x = step_modded, y = value, color = metric, linetype = metric),
+            size = 1.8) +
+  geom_point(data = df_avg,
+             aes(x = step_modded, y = value, color = metric, linetype = metric),
+             size = 2) +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1) +
+  labs(x = "Training Step (Log10)",
+       y = "Score",
+       color = "",
+       linetype = "") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = c("Induction (PS)" = "#0072B2",
+                              "Max QK" = "#CC79A7",
+                              "Associative Recall (Acc)" = "#009E73")) +
+  scale_linetype_manual(values = c("Max QK" = "solid",
+                                   "Induction (PS)" = "solid",
+                                   "Associative Recall (Acc)" = "dotted")) +
+  facet_wrap(~reorder(model, n_params))
+
+
+
+```
+
+## Over training (Frob)
+
+```{r merged_over_training_frob}
+# Per-seed max for PS and QK at each step (head-level metrics)
+df_max_per_seed <- df_merged_qk_and_ps %>%
+  filter(model == "pythia-14m") %>%
+  group_by(model, n_params, step_modded, seed, seed_name) %>%
+  summarise(
+    max_ps = max(mean_ps, na.rm = TRUE),
+    max_qk = max(composed_qk_frob, na.rm = TRUE),
+    ar_acc = first(mean_ar_acc),  # AR is model-level, same for all heads
+    .groups = "drop"
+  )
+
+
+
+### With lines per seed
+df_per_seed_long <- df_max_per_seed %>%
+  rename(`Induction (PS)` = max_ps,
+         `Max QK` = max_qk,
+         `Associative Recall (Acc)` = ar_acc) %>%
+  pivot_longer(cols = c(`Induction (PS)`, `Max QK`, `Associative Recall (Acc)`),
+               names_to = "metric",
+               values_to = "value")
+
+
+df_avg <- df_max_per_seed %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(
+    `Induction (PS)` = mean(max_ps),
+    `Max QK` = mean(max_qk),
+    `Associative Recall (Acc)` = mean(ar_acc),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(cols = c(`Induction (PS)`, `Max QK`, `Associative Recall (Acc)`),
+               names_to = "metric",
+               values_to = "value")
+
+ggplot() +
+  # thin per-seed lines
+  geom_line(data = df_per_seed_long,
+            aes(x = step_modded, y = value,
+                color = metric, group = interaction(metric, seed_name),
+                linetype = metric),
+            alpha = 0.3, size = 0.5) +
+  # bolded average lines
+  geom_line(data = df_avg,
+            aes(x = step_modded, y = value, color = metric, linetype = metric),
+            size = 1.8) +
+  geom_point(data = df_avg,
+             aes(x = step_modded, y = value, color = metric, linetype = metric),
+             size = 2) +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1) +
+  labs(x = "Training Step (Log10)",
+       y = "Score",
+       color = "",
+       linetype = "") +
+  theme_minimal() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = c("Induction (PS)" = "#0072B2",
+                              "Max QK" = "#CC79A7",
+                              "Associative Recall (Acc)" = "#009E73")) +
+  scale_linetype_manual(values = c("Max QK" = "solid",
+                                   "Induction (PS)" = "solid",
+                                   "Associative Recall (Acc)" = "dotted")) +
+  facet_wrap(~reorder(model, n_params))
+
+
+
+### Rescaled
+# rescale each metric to [0,1] (timing comparison, not magnitude)
+scales_df <- df_per_seed_long %>%
+  group_by(model, metric) %>%
+  summarise(vmin = min(value, na.rm = TRUE),
+            vmax = max(value, na.rm = TRUE), .groups = "drop")
+
+rescale_metric <- function(d) {
+  d %>% left_join(scales_df, by = c("model", "metric")) %>%
+    mutate(value = (value - vmin) / (vmax - vmin)) %>%
+    select(-vmin, -vmax)
+}
+
+df_per_seed_long_s <- rescale_metric(df_per_seed_long)
+df_avg_s           <- rescale_metric(df_avg)
+
+ggplot() +
+  geom_line(data = df_per_seed_long_s,
+            aes(x = step_modded, y = value,
+                color = metric, group = interaction(metric, seed_name),
+                linetype = metric),
+            alpha = 0.3, size = 0.5) +
+  geom_line(data = df_avg_s,
+            aes(x = step_modded, y = value, color = metric, linetype = metric),
+            size = 1.8) +
+  geom_point(data = df_avg_s,
+             aes(x = step_modded, y = value, color = metric, linetype = metric),
+             size = 2) +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1) +
+  labs(x = "Training Step (Log10)", y = "Normalized score (per metric)",
+       color = "", linetype = "") +
+  theme_minimal() +
+  theme(text = element_text(size = 15), legend.position = "bottom") +
+  scale_color_manual(values = c("Induction (PS)" = "#0072B2",
+                                "Max QK" = "#CC79A7",
+                                "Associative Recall (Acc)" = "#009E73")) +
+  scale_linetype_manual(values = c("Max QK" = "solid",
+                                   "Induction (PS)" = "solid",
+                                   "Associative Recall (Acc)" = "dotted")) +
+  facet_wrap(~reorder(model, n_params))
+
+
+```
+
+## Over training (altogether)
+
+```{r merged_all_over_training}
+
+# both QK metrics + PS + AR per seed/step
+df_max_per_seed <- df_merged_qk_and_ps %>%
+  filter(model == "pythia-14m") %>%
+  group_by(model, n_params, step_modded, seed, seed_name) %>%
+  summarise(
+    max_ps      = max(mean_ps, na.rm = TRUE),
+    max_qk_eig  = max(composed_qk_score, na.rm = TRUE),   # eigenvalue metric
+    max_qk_frob = max(composed_qk_frob,  na.rm = TRUE),   # Frobenius metric
+    ar_acc      = first(mean_ar_acc),
+    .groups = "drop"
+  )
+
+metric_order <- c("Max QK (Frob)", "Max QK (eig)",
+                  "Induction (PS)", "Associative Recall (Acc)")
+
+df_per_seed_long <- df_max_per_seed %>%
+  rename(`Induction (PS)`           = max_ps,
+         `Max QK (eig)`             = max_qk_eig,
+         `Max QK (Frob)`            = max_qk_frob,
+         `Associative Recall (Acc)` = ar_acc) %>%
+  pivot_longer(cols = all_of(metric_order),
+               names_to = "metric", values_to = "value") %>%
+  mutate(metric = factor(metric, levels = metric_order))
+
+df_avg <- df_per_seed_long %>%
+  group_by(model, n_params, step_modded, metric) %>%
+  summarise(value = mean(value), .groups = "drop")
+
+metric_cols <- c("Max QK (Frob)" = "#CC79A7",
+                 "Max QK (eig)"  = "#7B3F9E",
+                 "Induction (PS)" = "#0072B2",
+                 "Associative Recall (Acc)" = "#009E73")
+metric_lts  <- c("Max QK (Frob)" = "solid",
+                 "Max QK (eig)"  = "dashed",
+                 "Induction (PS)" = "solid",
+                 "Associative Recall (Acc)" = "dotted")
+
+plot_traj <- function(per_seed, avg, ylab) {
+  ggplot() +
+    geom_line(data = per_seed,
+              aes(step_modded, value, color = metric,
+                  group = interaction(metric, seed_name), linetype = metric),
+              alpha = 0.3, size = 0.5) +
+    geom_line(data = avg,
+              aes(step_modded, value, color = metric, linetype = metric),
+              size = 1.8) +
+    geom_point(data = avg,
+               aes(step_modded, value, color = metric, linetype = metric),
+               size = 2) +
+    scale_x_log10() +
+    geom_vline(xintercept = 1000, linetype = "dotted", size = 1) +
+    scale_color_manual(values = metric_cols) +
+    scale_linetype_manual(values = metric_lts) +
+    labs(x = "Training Step (Log10)", y = ylab, color = "", linetype = "") +
+    theme_minimal() +
+    theme(text = element_text(size = 15), legend.position = "bottom") +
+    facet_wrap(~reorder(model, n_params))
+}
+
+# --- raw ---
+plot_traj(df_per_seed_long, df_avg, "Score")
+
+# --- normalized per metric ---
+scales_df <- df_per_seed_long %>%
+  group_by(model, metric) %>%
+  summarise(vmin = min(value, na.rm = TRUE), vmax = max(value, na.rm = TRUE),
+            .groups = "drop")
+rescale_metric <- function(d) {
+  d %>% left_join(scales_df, by = c("model", "metric")) %>%
+    mutate(value = (value - vmin) / (vmax - vmin)) %>% select(-vmin, -vmax)
+}
+plot_traj(rescale_metric(df_per_seed_long), rescale_metric(df_avg),
+          "Normalized score (per metric)")
+
+```
+
+
+#### Tracking individual heads
+
+```{r temporal_ordering_ind_heads}
+top_induction_heads <- df_merged_qk_and_ps %>%
+  filter(model == "pythia-14m", step == 143000) %>%
+  group_by(seed_name) %>%
+  slice_max(mean_ps, n = 1, with_ties = FALSE) %>%
+  select(seed_name, layer, head) %>%
+  rename(target_layer = layer, target_head = head)
+
+top_head_trajectories <- df_merged_qk_and_ps %>%
+  filter(model == "pythia-14m") %>%
+  inner_join(top_induction_heads,
+             by = c("seed_name",
+                    "layer" = "target_layer",
+                    "head" = "target_head"))
+
+top_head_long <- top_head_trajectories %>%
+  select(seed_name, step_modded, composed_qk_score, mean_ps) %>%
+  rename(`QK` = composed_qk_score, `PS` = mean_ps) %>%
+  pivot_longer(cols = c(QK, PS), names_to = "metric", values_to = "score")
+
+avg_top_head <- top_head_long %>%
+  group_by(step_modded, metric) %>%
+  summarise(mean_score = mean(score), .groups = "drop")
+
+ggplot() +
+  geom_line(data = top_head_long,
+            aes(x = step_modded, y = score,
+                color = metric, group = interaction(metric, seed_name)),
+            alpha = 0.3, size = 0.5) +
+  geom_line(data = avg_top_head,
+            aes(x = step_modded, y = mean_score, color = metric),
+            size = 1.8) +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted") +
+  labs(x = "Training Step (Log10)",
+       y = "Score",
+       color = "Metric",
+       title = "Per-seed trajectory of the top induction head (identified at step 143000)") +
+  theme_minimal() +
+  scale_color_manual(values = c("PS" = "#0072B2",
+                              "QK" = "#CC79A7")) +
+  theme(text = element_text(size = 14), legend.position = "bottom")
+
+
+panel_labels <- top_head_trajectories %>%
+  distinct(seed_name, layer, head) %>%
+  mutate(label = paste0("L", layer, "H", head - 1))  # subtract 1 if you want 0-indexed
+
+ggplot(top_head_long, aes(x = step_modded, y = score, color = metric)) +
+  geom_line(size = 1) +
+  geom_point(size = 1.5) +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 0.8) +
+  geom_text(data = panel_labels,
+            aes(x = 1, y = 0.95, label = label),
+            inherit.aes = FALSE,
+            hjust = 0, size = 4, color = "gray30") +
+  labs(x = "Training Step (Log10)",
+       y = "Score",
+       color = "Metric",
+       title = "Top induction head per seed: QK vs PS trajectory") +
+  scale_color_manual(values = c("PS" = "#0072B2",
+                              "QK" = "#CC79A7")) +
+  theme_minimal() +
+  theme(text = element_text(size = 13),
+        legend.position = "bottom") +
+  facet_wrap(~ seed_name, ncol = 3)
+
+```
+
+#### Tracking individual heads (Frob)
+
+```{r temporal_ordering_ind_heads_frob}
+top_induction_heads <- df_merged_qk_and_ps %>%
+  filter(model == "pythia-14m", step == 143000) %>%
+  group_by(seed_name) %>%
+  slice_max(mean_ps, n = 1, with_ties = FALSE) %>%
+  select(seed_name, layer, head) %>%
+  rename(target_layer = layer, target_head = head)
+
+top_head_trajectories <- df_merged_qk_and_ps %>%
+  filter(model == "pythia-14m") %>%
+  inner_join(top_induction_heads,
+             by = c("seed_name",
+                    "layer" = "target_layer",
+                    "head" = "target_head"))
+
+top_head_long <- top_head_trajectories %>%
+  select(seed_name, step_modded, composed_qk_frob, mean_ps) %>%
+  rename(`QK` = composed_qk_frob, `PS` = mean_ps) %>%
+  pivot_longer(cols = c(QK, PS), names_to = "metric", values_to = "score")
+
+avg_top_head <- top_head_long %>%
+  group_by(step_modded, metric) %>%
+  summarise(mean_score = mean(score), .groups = "drop")
+
+ggplot() +
+  geom_line(data = top_head_long,
+            aes(x = step_modded, y = score,
+                color = metric, group = interaction(metric, seed_name)),
+            alpha = 0.3, size = 0.5) +
+  geom_line(data = avg_top_head,
+            aes(x = step_modded, y = mean_score, color = metric),
+            size = 1.8) +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted") +
+  labs(x = "Training Step (Log10)",
+       y = "Score",
+       color = "Metric",
+       title = "Per-seed trajectory of the top induction head (identified at step 143000)") +
+  theme_minimal() +
+  scale_color_manual(values = c("PS" = "#0072B2",
+                              "QK" = "#CC79A7")) +
+  theme(text = element_text(size = 14), legend.position = "bottom")
+
+
+panel_labels <- top_head_trajectories %>%
+  distinct(seed_name, layer, head) %>%
+  mutate(label = paste0("L", layer, "H", head - 1))  # subtract 1 if you want 0-indexed
+
+ggplot(top_head_long, aes(x = step_modded, y = score, color = metric)) +
+  geom_line(size = 1) +
+  geom_point(size = 1.5) +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 0.8) +
+  geom_text(data = panel_labels,
+            aes(x = 1, y = 0.95, label = label),
+            inherit.aes = FALSE,
+            hjust = 0, size = 4, color = "gray30") +
+  labs(x = "Training Step (Log10)",
+       y = "Score",
+       color = "Metric",
+       title = "Top induction head per seed: QK vs PS trajectory") +
+  scale_color_manual(values = c("PS" = "#0072B2",
+                              "QK" = "#CC79A7")) +
+  theme_minimal() +
+  theme(text = element_text(size = 13),
+        legend.position = "bottom") +
+  facet_wrap(~ seed_name, ncol = 3)
+
+```
+
+
+
+## Correlation over training
+
+We measure the correlation between QK and PS at each checkpoint. We find sharp increases at step ~1000; we also see a brief dip at step ~512, perhaps because QK increases before PS.
+
+```{r merged_cor_over_training}
+# Per-seed max for PS and QK at each step (head-level metrics)
+df_cor_by_seed <- df_merged_qk_and_ps %>%
+  filter(model == "pythia-14m") %>%
+  group_by(step_modded, model, n_params, seed_name) %>%
+  summarise(r_spearman = cor(mean_ps, composed_qk_score, method = "spearman"))
+
+summary_avg = df_cor_by_seed %>%
+  group_by(model, n_params, step_modded) %>%
+  summarise(
+    mean_across_seeds = mean(r_spearman)
+  )
+
+grand_avg <- df_cor_by_seed %>%
+  group_by(step_modded) %>%
+  summarise(grand_mean = mean(r_spearman))
+
+df_cor_by_seed %>%
+  ggplot(aes(x = step_modded,
+             y = r_spearman,
+             color = factor(seed_name))) +
+  geom_line(size = .6, alpha = .4) +   # individual curves
+  geom_line(data = summary_avg, 
+            aes(x = step_modded, y = mean_across_seeds), 
+            color = "black", size = 2) +      # per-model average
+  theme_minimal() +
+  labs(x = "Training Step (Log10)",
+       y = "Correlation between QK and PS",
+       color = "") +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1.2) +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  scale_color_manual(values = viridisLite::viridis(9, option = "mako", 
+                                                   begin = 0.8, end = 0.15))
+```
+
+
+### Further testing with cross-correlation
+
+Here, we test whether QK precedes PS by asking about asymmetries in the lagged correlation. 
+
+```{r}
+# Build the per-seed time series
+df_series <- df_merged_qk_and_ps %>%
+  filter(model == "pythia-14m") %>%
+  group_by(model, seed, seed_name, step_modded) %>%
+  summarise(
+    max_qk = max(composed_qk_score, na.rm = TRUE),
+    max_ps = max(mean_ps, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(model, seed, step_modded)
+
+# Lagged cross-correlation: positive lag = QK leads PS
+compute_xcorr <- function(df_one_seed, max_lag = 4) {
+  qk <- df_one_seed$max_qk
+  ps <- df_one_seed$max_ps
+  n <- length(qk)
+  
+  lags <- -max_lag:max_lag
+  cors <- sapply(lags, function(k) {
+    t_start <- max(1, 1 - k)
+    t_end   <- min(n, n - k)
+    if (t_end - t_start < 2) return(NA_real_)
+    
+    qk_window <- qk[t_start:t_end]
+    ps_window <- ps[(t_start + k):(t_end + k)]
+    cor(qk_window, ps_window, method = "spearman")
+  })
+  
+  data.frame(lag = lags, correlation = cors)
+}
+
+xcorr_results <- df_series %>%
+  group_by(model, seed, seed_name) %>%
+  group_modify(~ compute_xcorr(.x)) %>%
+  ungroup()
+
+# Average across seeds within each model
+xcorr_avg <- xcorr_results %>%
+  group_by(model, lag) %>%
+  summarise(mean_cor = mean(correlation, na.rm = TRUE), .groups = "drop")
+
+# Plot
+ggplot(xcorr_results, aes(x = lag, y = correlation, color = seed_name)) +
+  geom_line(alpha = 0.4) +
+  geom_line(data = xcorr_avg, aes(x = lag, y = mean_cor),
+            color = "red", size = 1.5, inherit.aes = FALSE) +
+  geom_vline(xintercept = 0, linetype = "dotted") +
+  labs(x = "Lag (positive = QK leads PS, in checkpoint units)",
+       y = "Cross-correlation",
+       title = "Lagged correlation between max QK and max PS") +
+  theme_minimal() +
+  theme(text = element_text(size = 14)) +
+  facet_wrap(~model)
+
+
+
+######### Do it again with Frob
+# Build the per-seed time series
+df_series <- df_merged_qk_and_ps %>%
+  filter(model == "pythia-14m") %>%
+  group_by(model, seed, seed_name, step_modded) %>%
+  summarise(
+    max_qk = max(composed_qk_frob, na.rm = TRUE),
+    max_ps = max(mean_ps, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(model, seed, step_modded)
+
+# Lagged cross-correlation: positive lag = QK leads PS
+compute_xcorr <- function(df_one_seed, max_lag = 4) {
+  qk <- df_one_seed$max_qk
+  ps <- df_one_seed$max_ps
+  n <- length(qk)
+  
+  lags <- -max_lag:max_lag
+  cors <- sapply(lags, function(k) {
+    t_start <- max(1, 1 - k)
+    t_end   <- min(n, n - k)
+    if (t_end - t_start < 2) return(NA_real_)
+    
+    qk_window <- qk[t_start:t_end]
+    ps_window <- ps[(t_start + k):(t_end + k)]
+    cor(qk_window, ps_window, method = "spearman")
+  })
+  
+  data.frame(lag = lags, correlation = cors)
+}
+
+xcorr_results <- df_series %>%
+  group_by(model, seed, seed_name) %>%
+  group_modify(~ compute_xcorr(.x)) %>%
+  ungroup()
+
+# Average across seeds within each model
+xcorr_avg <- xcorr_results %>%
+  group_by(model, lag) %>%
+  summarise(mean_cor = mean(correlation, na.rm = TRUE), .groups = "drop")
+
+# Plot
+ggplot(xcorr_results, aes(x = lag, y = correlation, color = seed_name)) +
+  geom_line(alpha = 0.4) +
+  geom_line(data = xcorr_avg, aes(x = lag, y = mean_cor),
+            color = "red", size = 1.5, inherit.aes = FALSE) +
+  geom_vline(xintercept = 0, linetype = "dotted") +
+  labs(x = "Lag (positive = QK leads PS, in checkpoint units)",
+       y = "Cross-correlation",
+       title = "Lagged correlation between max QK Frob and max PS") +
+  theme_minimal() +
+  theme(text = element_text(size = 14)) +
+  facet_wrap(~model)
+```
+
+### Capturing onsets
+
+```{r onsets_configurational}
+combined <- df_per_seed_long %>%
+  filter(metric != "Associative Recall (Acc)") %>%
+  group_by(model, n_params, seed_name, metric, step_modded) %>%
+  summarise(max_val = max(value, na.rm = TRUE), .groups = "drop")
+
+df_dratio <- combined %>%
+  group_by(model, seed_name, metric) %>%
+  mutate(scaled = (max_val - min(max_val)) / (max(max_val) - min(max_val))) %>% 
+  group_by(model, n_params, seed_name, metric) %>%
+  arrange(step_modded, .by_group = TRUE) %>%
+  mutate(log_step = log10(step_modded),
+         d_ratio  = c(NA, diff(scaled) / diff(log_step))) %>%
+  ungroup()
+
+
+onset_at_deriv <- function(df, T) {
+  df %>% filter(d_ratio > T) %>%
+    group_by(model, n_params, seed_name, metric) %>%
+    slice_min(step_modded, with_ties = FALSE) %>% ungroup() %>%
+    transmute(model, n_params, seed_name, metric, onset_step = step_modded, threshold = T)
+}
+deriv_sweep <- map_dfr(seq(0.2, 1, by = 0.01), ~ onset_at_deriv(df_dratio, .x))
+
+
+
+### Now average across ratios
+df_onset_long = deriv_sweep %>% 
+  group_by(model, n_params, seed_name, metric) %>%
+  summarise(m_onset = mean(onset_step - 1)) 
+
+
+df_onset_long %>%
+  ggplot(aes(x = metric,
+             y = m_onset)) +
+  geom_jitter(size = 5, alpha = .7, width = .05) +
+  scale_color_manual(values = viridisLite::viridis(4, option = "mako", 
+                                                   begin = 0.8, end = 0.15)) + 
+  scale_y_log10() +
+  theme_minimal() +
+  coord_flip() +
+  theme(text = element_text(size = 15),
+        legend.position = "bottom") +
+  labs(x = "Metric",
+       y = "Mean Deriv. Step (Log10)",
+       color = "") 
+
+
+
+mod_full = lmer(data = df_onset_long,
+                 log10(m_onset) ~ metric + 
+                  (1  |seed_name))
+summary(mod_full)
+
+
+offsets = df_onset_long %>%
+  pivot_wider(id_cols = c(model, seed_name, n_params),
+              values_from = m_onset,
+              names_from = metric) %>%
+  mutate(temporal_offset_eig = `Induction (PS)` - `Max QK (eig)`,
+         temporal_offset_frob = `Induction (PS)` - `Max QK (Frob)`) %>%
+  mutate(eig_before = temporal_offset_eig > 0,
+         frob_before = temporal_offset_frob > 0)
+mean(offsets$eig_before)
+mean(offsets$frob_before)
+
+summary(offsets$temporal_offset_eig)
+summary(offsets$temporal_offset_frob)
+```
+
+
+
+# Does it also capture 1-back heads?
+
+## Get partners
+
+```{r}
+partners_all = df_pythia_models %>%
+  filter(step == 143000) %>%
+  select(seed_name, layer, head, composed_qk_score, partner_layer, partner_head)
+
+
+# top induction head per seed, defined by PS
+partners_of_top_heads <- df_merged_qk_and_ps %>%
+  filter(step == 143000) |>
+  filter(model == "pythia-14m") %>%
+  group_by(seed_name) |>
+  slice_max(mean_ps, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  select(seed_name, layer, head, composed_qk_score, partner_layer, partner_head, mean_ps)
+
+partners_of_top_heads
+
+```
+
+## Load 1-back data
+
+```{r}
+directory_path <- "../../data/processed/attention_summaries/"
+csv_files <- list.files(path = directory_path, pattern = "*.csv", full.names = TRUE)
+length(csv_files)
+csv_list <- csv_files %>%
+  map(~ read_csv(.))
+
+
+df_pythia_models <- bind_rows(csv_list) %>%
+  mutate(model = sub("^EleutherAI/", "", mpath)) %>%
+  filter(Layer > 0)
+nrow(df_pythia_models)
+
+
+### Recode as "partenr head/layer" to join with QK scores.
+df_pythia_models_1back = df_pythia_models %>%
+  filter(model == "pythia-14m") %>%
+  mutate(partner_layer = Layer,
+         partner_head = Head - 1) %>%
+  select(partner_head, partner_layer, step_modded, seed_name, mean_1back)
+
+```
+
+## Are partner heads 1-back heads?
+
+```{r}
+# the heads that were selected as a top-induction-head's K-composition partner
+partner_keys <- partners_of_top_heads %>%
+  distinct(seed_name, partner_layer, partner_head) %>%
+  mutate(is_top_partner = TRUE)
+
+# every head at the final step, flagged for partner membership
+df_1back_flagged <- df_pythia_models_1back %>%                      
+  left_join(partner_keys) %>% #   onto this df's head identity
+  mutate(is_top_partner = coalesce(is_top_partner, FALSE))
+
+
+df_1back_flagged %>%
+  filter(step_modded == 143001) %>%
+  ggplot(aes(x = is_top_partner,
+             y = mean_1back)) +
+  geom_boxplot() +
+  theme_minimal()
+
+
+df_1back_flagged %>%
+  filter(step_modded == 143001) %>%
+  group_by(is_top_partner) %>%
+  summarise(mean_1back_attn = mean(mean_1back),
+            sd = sd(mean_1back),
+            n = n())
+
+
+per_seed <- df_1back_flagged %>%
+  group_by(step_modded, is_top_partner, seed_name) %>%
+  summarise(mean_1back_attn = mean(mean_1back), .groups = "drop")
+
+
+avg <- per_seed %>%
+  group_by(step_modded, is_top_partner) %>%
+  summarise(mean_1back_attn = mean(mean_1back_attn), .groups = "drop")
+
+ggplot() +
+  geom_line(data = per_seed,
+            aes(x = step_modded, y = mean_1back_attn,
+                color = is_top_partner,
+                group = interaction(is_top_partner, seed_name)),
+            alpha = 0.25, size = 0.5) +
+  geom_line(data = avg,
+            aes(x = step_modded, y = mean_1back_attn, color = is_top_partner),
+            size = 1.5) +
+  scale_x_log10() +
+  geom_vline(xintercept = 1000, linetype = "dotted", size = 1) +
+  scale_color_manual(
+    values = c("FALSE" = "gray60", "TRUE" = "#0072B2"),
+    labels = c("FALSE" = "Other heads",
+               "TRUE"  = "Partner of top\ninduction head")) +
+  labs(x = "Training Step (Log10)", y = "Mean 1-back attention", color = NULL) +
+  theme_minimal() +
+  theme(text = element_text(size = 13), legend.position = "bottom")
+
+final_step = df_1back_flagged %>%
+  filter(step_modded == 143001) 
+
+mod_full = lmer(data = final_step,
+                mean_1back ~ is_top_partner + (1|seed_name))
+summary(mod_full)
+
+```
+
+
