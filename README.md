@@ -2,7 +2,7 @@
 
 Code and data for the paper:
 
-> Trott, S. (To Appear). Mechanistic Convergence and Divergence Across LLM Instances. *Computational Linguistics*.
+> Trott, S. (To Appear). Mechanistic Convergence and Divergence Across LLM Instances: Axes of Correspondence for Generalizable Interpretability Research. *Computational Linguistics*.
 
 Includes the necessary files to reproduce the primary analyses of 1-back attention, first-token attention, and induction heads.
 

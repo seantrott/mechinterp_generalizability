@@ -30,11 +30,13 @@ MODELS = [
     'EleutherAI/pythia-12b',
 ]
 
+MODELS = ['EleutherAI/pythia-14m']
+
 SEQ_LEN = 50
 NUM_SAMPLES = 100
 BATCH_SIZE = 5
 
-SAVEPATH = "data/processed/induction_results_main"
+SAVEPATH = "data/processed/induction_results_test"
 
 
 def generate_revisions_limited():
@@ -78,34 +80,31 @@ def compute_induction_scores(model, config, seq_len=50, num_samples=100,
         with torch.no_grad():
             out = model(tokens, output_attentions=True)
 
-        # ── PS: attention from repeated-half positions to induction targets ──
         src = torch.arange(seq_len, seq_len * 2)
         tgt = src - (seq_len - 1)
 
         batch_ps = torch.zeros(bs, n_layers, n_heads)
         for layer in range(n_layers):
-            attn = out.attentions[layer]  # (bs, heads, seq, seq)
-            # mean PS across positions within each sample
+            attn = out.attentions[layer] 
             batch_ps[:, layer, :] = attn[:, :, src, tgt].mean(dim=-1).cpu()
 
         ps_all.append(batch_ps)
 
-        # ── AR: does the model predict B given [A, B, ..., A]? ──
-        logits = out.logits  # (bs, seq_len*2, vocab)
-        target_ids = tokens[:, 1:seq_len + 1]  # the B tokens from first half
-        relevant_logits = logits[:, seq_len:seq_len * 2, :]  # logits at repeated-half positions
+        logits = out.logits 
+        target_ids = tokens[:, 1:seq_len + 1]  
+        relevant_logits = logits[:, seq_len:seq_len * 2, :]  
 
         target_logits = torch.gather(
             relevant_logits, dim=-1, index=target_ids.unsqueeze(-1)
         )  # (bs, seq_len, 1)
 
-        ranks = (relevant_logits > target_logits).sum(dim=-1)  # (bs, seq_len)
+        ranks = (relevant_logits > target_logits).sum(dim=-1)  
         ar_acc_all.append((ranks == 0).float().mean(dim=1).cpu())  # per-sample accuracy
         ar_rank_all.append(ranks.float().mean(dim=1).cpu())  # per-sample mean rank
 
-    ps_all = torch.cat(ps_all, dim=0).numpy()        # (num_samples, n_layers, n_heads)
-    ar_acc_all = torch.cat(ar_acc_all, dim=0).numpy()  # (num_samples,)
-    ar_rank_all = torch.cat(ar_rank_all, dim=0).numpy()  # (num_samples,)
+    ps_all = torch.cat(ps_all, dim=0).numpy()        
+    ar_acc_all = torch.cat(ar_acc_all, dim=0).numpy() 
+    ar_rank_all = torch.cat(ar_rank_all, dim=0).numpy() 
 
     return ps_all, ar_acc_all, ar_rank_all
 
